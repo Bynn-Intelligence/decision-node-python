@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bynn-decisionnode"
+version = "0.1.0"
+description = "The official Python client for the DecisionNode API."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "Bynn Intelligence, Inc." }]
+keywords = ["decisionnode", "decision", "classification", "api", "sdk"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Framework :: AsyncIO",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+dependencies = [
+  "httpx>=0.25,<1",
+  "typing_extensions>=4.5",
+]
+
+[project.urls]
+Homepage = "https://decisionnode.com"
+Repository = "https://github.com/Bynn-Intelligence/decision-node-python"
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+  "mypy>=1.10",
+  "ruff>=0.5",
+]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/decisionnode", "tests", "README.md", "CHANGELOG.md", "LICENSE"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/decisionnode"]
+
+[tool.pytest.ini_options]
+testpaths = ["src", "tests"]
+asyncio_mode = "auto"
+pythonpath = ["tests"]
+addopts = "--doctest-modules --import-mode=importlib"
+
+[tool.mypy]
+strict = true
+files = ["src/decisionnode"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["UP006", "UP007", "UP035", "UP045", "UP031", "B904", "B905"]
