@@ -25,6 +25,7 @@ __all__ = [
     "NotFoundError",
     "ValidationError",
     "RateLimitError",
+    "SessionLimitError",
     "OverloadedError",
     "ServerError",
     "ConnectionError",
@@ -160,6 +161,14 @@ class RateLimitError(DecisionNodeError):
     def __init__(self, message: Optional[str] = None, *, retry_after: Optional[float] = None, **kwargs: Any) -> None:
         self.retry_after = retry_after
         super().__init__(message, **kwargs)
+
+
+class SessionLimitError(RateLimitError):
+    """429 with ``error_type`` ``session_limit_exceeded``: the key already holds as many open
+    sessions as it may. Never retried; end a session or wait for one to expire.
+
+    A subclass of :class:`RateLimitError`, so code that catches that catches this too.
+    """
 
 
 class OverloadedError(DecisionNodeError):

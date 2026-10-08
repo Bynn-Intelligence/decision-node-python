@@ -15,6 +15,7 @@ __all__ = [
     "TruthAnswer",
     "ChoiceAnswer",
     "ScoreAnswer",
+    "NumberAnswer",
     "UnknownAnswer",
     "AnyAnswer",
     "Usage",
@@ -29,7 +30,7 @@ class Answer:
     """Base class of every answer.
 
     Attributes:
-        type: The answer's type as sent (``truth``, ``choice``, ``score``, or a type
+        type: The answer's type as sent (``truth``, ``choice``, ``score``, ``number``, or a type
             this version of the SDK does not know).
         raw: The answer object exactly as received.
     """
@@ -44,6 +45,9 @@ class TruthAnswer(Answer):
 
     Attributes:
         truth: The probability that the answer is yes, from 0 to 1.
+
+    ``type`` is the answer's type as sent; a ``truth`` question may be answered under
+    the API's other name for the type, which reads the same here.
     """
 
     truth: float
@@ -82,12 +86,31 @@ class ScoreAnswer(Answer):
 
 
 @dataclass(frozen=True)
+class NumberAnswer(Answer):
+    """The answer to a ``number`` question.
+
+    Attributes:
+        number: The most likely value of the grid, as the API wrote it (an ``int`` for a
+            whole value, else a ``float``).
+        expected: The probability-weighted mean of the values, to the grid's decimals.
+        confidence: How concentrated the probabilities are around the most likely value.
+        probabilities: The likely values, keyed by the value exactly as the API wrote it
+            (``"7"``, ``"3.5"``, ``"-2.345"``), in ascending order.
+    """
+
+    number: Union[int, float]
+    expected: Union[int, float]
+    confidence: float
+    probabilities: Dict[str, float]
+
+
+@dataclass(frozen=True)
 class UnknownAnswer(Answer):
     """An answer of a type this version of the SDK does not know, or of a known type whose
     fields are missing or of the wrong type. Read its fields from ``raw``."""
 
 
-AnyAnswer = Union[TruthAnswer, ChoiceAnswer, ScoreAnswer, UnknownAnswer]
+AnyAnswer = Union[TruthAnswer, ChoiceAnswer, ScoreAnswer, NumberAnswer, UnknownAnswer]
 
 
 @dataclass(frozen=True)
@@ -192,6 +215,9 @@ class ModelInfo:
 
 # --------------------------------------------------------------------------- parsing
 
+# The wire name /v1/systemone gives the truth type. Its answers read as TruthAnswer.
+LEGACY_TRUTH = "noul"
+
 
 class _Malformed(Exception):
     """A known answer type whose fields are missing or of the wrong type."""
@@ -247,6 +273,17 @@ def parse_answer(raw: Any) -> AnyAnswer:
     try:
         if kind == "truth":
             return TruthAnswer(type=kind, raw=raw, truth=_number(raw, "truth"))
+        if kind == LEGACY_TRUTH:
+            return TruthAnswer(type=kind, raw=raw, truth=_number(raw, LEGACY_TRUTH))
+        if kind == "number":
+            return NumberAnswer(
+                type=kind,
+                raw=raw,
+                number=_number(raw, "number"),
+                expected=_number(raw, "expected"),
+                confidence=_number(raw, "confidence"),
+                probabilities=_number_values(_mapping(raw, "probabilities")),
+            )
         if kind == "choice":
             return ChoiceAnswer(
                 type=kind,
