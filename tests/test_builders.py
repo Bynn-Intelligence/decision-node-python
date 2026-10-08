@@ -5,11 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from decisionnode import DecisionNodeError, Image, choice, score, truth
+from decisionnode import DecisionNodeError, Image, choice, number, score, truth
 
-PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
-JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 16
-WEBP = b"RIFF\x00\x00\x00\x00WEBPVP8 " + b"\x00" * 8
+FIXTURES = Path(__file__).parent / "fixtures"
+PNG = (FIXTURES / "rgb-3x5.png").read_bytes()
+JPEG = (FIXTURES / "jpeg-baseline-7x3.jpg").read_bytes()
+WEBP = (FIXTURES / "webp-lossy-5x7.webp").read_bytes()
 
 
 class TestTruth:
@@ -75,37 +76,66 @@ class TestScore:
             score("x", {"0": "low"})  # type: ignore[arg-type]
 
 
+class TestNumber:
+    def test_instructions_only_leaves_the_grid_to_the_api(self) -> None:
+        assert number("How many?") == {"type": "number", "instructions": "How many?"}
+
+    def test_range_and_step(self) -> None:
+        assert number("Rating?", min=0, max=5, step=0.5) == {
+            "type": "number",
+            "instructions": "Rating?",
+            "min": 0,
+            "max": 5,
+            "step": 0.5,
+        }
+
+    def test_zero_is_sent(self) -> None:
+        assert number("t", 0, 0) == {"type": "number", "instructions": "t", "min": 0, "max": 0}
+
+    def test_negative_and_decimals(self) -> None:
+        assert number("t", -40.5, 10.25, 0.25) == {
+            "type": "number",
+            "instructions": "t",
+            "min": -40.5,
+            "max": 10.25,
+            "step": 0.25,
+        }
+
+
 class TestImage:
     @pytest.mark.parametrize(("data", "media_type"), [(PNG, "image/png"), (JPEG, "image/jpeg"), (WEBP, "image/webp")])
     def test_path_sniffs_media_type(self, tmp_path: Path, data: bytes, media_type: str) -> None:
         f = tmp_path / "img.bin"
         f.write_bytes(data)
         img = Image("i", path=f)
+        assert img.fault is None
         assert img.to_dict() == {"id": "i", "media_type": media_type, "data": base64.b64encode(data).decode()}
 
-    def test_path_positional_and_str(self, tmp_path: Path) -> None:
-        f = tmp_path / "a.png"
-        f.write_bytes(PNG)
-        assert Image("i", str(f)).media_type == "image/png"
+    def test_path_positional_and_str(self) -> None:
+        assert Image("i", str(FIXTURES / "rgb-3x5.png")).media_type == "image/png"
 
     def test_unreadable_file(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="cannot read") as info:
             Image("i", path=tmp_path / "missing.png")
         assert not isinstance(info.value, DecisionNodeError)
 
-    def test_not_an_image(self, tmp_path: Path) -> None:
+    def test_not_an_image_is_a_fault_raised_when_sent(self, tmp_path: Path) -> None:
         f = tmp_path / "a.txt"
         f.write_bytes(b"hello world")
-        with pytest.raises(ValueError, match="not a JPEG, PNG or WebP") as info:
-            Image("i", path=f)
-        assert not isinstance(info.value, DecisionNodeError)
+        img = Image("i", path=f)
+        assert img.fault == "Image i is not a JPEG, PNG or WebP image."
 
     def test_bytes_with_media_type(self) -> None:
-        assert Image("i", data=b"abc", media_type="image/jpeg").to_dict() == {
+        assert Image("i", data=JPEG, media_type="image/jpeg").to_dict() == {
             "id": "i",
             "media_type": "image/jpeg",
-            "data": "YWJj",
+            "data": base64.b64encode(JPEG).decode(),
         }
+
+    def test_base64_text(self) -> None:
+        img = Image("i", data=base64.b64encode(PNG).decode())
+        assert img.data == PNG and img.media_type == "image/png" and img.fault is None
+        assert Image("i", data="not base64!").fault == "Image i: data is not valid base64."
 
     @pytest.mark.parametrize(("data", "media_type"), [(PNG, "image/png"), (JPEG, "image/jpeg"), (WEBP, "image/webp")])
     def test_bytes_sniffed(self, data: bytes, media_type: str) -> None:
@@ -113,16 +143,32 @@ class TestImage:
         assert img.media_type == media_type
         assert img.to_dict() == {"id": "i", "media_type": media_type, "data": base64.b64encode(data).decode()}
 
-    def test_bytes_of_another_format_without_media_type(self) -> None:
-        for data in (b"GIF89a....", b"", b"%PDF-1.7"):
-            with pytest.raises(ValueError, match="not JPEG, PNG or WebP") as info:
-                Image("i", data=data)
-            assert not isinstance(info.value, DecisionNodeError)
+    def test_faults_in_the_api_words(self) -> None:
+        assert Image("i", data=b"GIF89a....").fault == "Image i is not a JPEG, PNG or WebP image."
+        assert Image("i", data=b"").fault == "Image i is not a JPEG, PNG or WebP image."
+        assert Image("i", data=PNG, media_type="image/jpeg").fault == "Image i could not be decoded as image/jpeg."
+        assert Image("i", data=b"GIF89a", media_type="image/gif").fault == (
+            "Image i: media_type must be image/jpeg, image/png or image/webp."
+        )
+        assert Image("i", data=PNG + b"\0" * 10_485_760).fault == "Image i is larger than 10 MB."
+        assert Image("i", data=PNG[:20]).fault == "Image i could not be decoded as image/png."
+
+    def test_wrong_argument_types(self) -> None:
         with pytest.raises(ValueError):
-            Image("i", data="not bytes")  # type: ignore[arg-type]
+            Image("i", data=42)  # type: ignore[arg-type]
+        with pytest.raises(ValueError):
+            Image(7, data=PNG)  # type: ignore[arg-type]
 
     def test_url(self) -> None:
         assert Image("i", url="https://example.com/a.jpg").to_dict() == {"id": "i", "url": "https://example.com/a.jpg"}
+
+    def test_upload_id(self) -> None:
+        assert Image("i", upload_id="upl_1").to_dict() == {"id": "i", "upload_id": "upl_1"}
+        assert Image("i", upload_id="upl_1", media_type="image/png").to_dict() == {
+            "id": "i",
+            "upload_id": "upl_1",
+            "media_type": "image/png",
+        }
 
     def test_exactly_one_source(self) -> None:
         with pytest.raises(ValueError):
@@ -131,3 +177,5 @@ class TestImage:
             Image("i", data=PNG, url="https://example.com/a.png")
         with pytest.raises(ValueError):
             Image("i", url="https://example.com/a.png", media_type="image/png")
+        with pytest.raises(ValueError):
+            Image("i", url="https://example.com/a.png", upload_id="upl_1")
