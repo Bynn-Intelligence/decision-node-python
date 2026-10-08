@@ -216,10 +216,10 @@ class TestQuestions:
 
 class TestImages:
     def test_count(self) -> None:
-        check_images([dn.Image("i%d" % i, data=PNG) for i in range(4)])
+        check_images([dn.Image("i%d" % i, data=PNG) for i in range(16)])
         with pytest.raises(dn.BadRequestError) as info:
-            check_images([dn.Image("i%d" % i, url="https://x.example/%d.png" % i) for i in range(5)])
-        assert info.value.message == "Too many images. Must have at most 4 images."
+            check_images([dn.Image("i%d" % i, url="https://x.example/%d.png" % i) for i in range(17)])
+        assert info.value.message == "Too many images: 17, the limit is 16."
         assert info.value.error_type == "api_usage_error"
 
     def test_ids(self) -> None:

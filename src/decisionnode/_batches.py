@@ -194,10 +194,14 @@ def parse_result_line(text: str) -> BatchResult:
 
 
 def line_bytes(
-    req: Mapping[str, Any], questions: Mapping[str, Any], wires: Sequence[Mapping[str, Any]], model: str
+    req: Mapping[str, Any],
+    questions: Mapping[str, Any],
+    wires: Sequence[Mapping[str, Any]],
+    model: str,
+    videos: Sequence[Mapping[str, Any]] = (),
 ) -> bytes:
     """One JSON Lines line: ``custom_id``, ``model``, ``state`` (``""`` when absent), the
-    questions, the images, and any other field as given."""
+    questions, the images, the videos, and any other field as given."""
     out: Dict[str, Any] = {
         "custom_id": req["custom_id"],
         "model": req.get("model") or model,
@@ -206,8 +210,10 @@ def line_bytes(
     }
     if wires:
         out["images"] = list(wires)
+    if videos:
+        out["videos"] = list(videos)
     for key, value in req.items():
-        if key not in out and key != "images":
+        if key not in out and key not in ("images", "videos"):
             out[key] = value
     return _base.encode(out) + b"\n"
 

@@ -115,10 +115,14 @@ AnyAnswer = Union[TruthAnswer, ChoiceAnswer, ScoreAnswer, NumberAnswer, UnknownA
 
 @dataclass(frozen=True)
 class Usage:
-    """Token counts of one decision."""
+    """Token counts of one decision; for a request with videos also the frames and the
+    seconds the server read (``None`` otherwise)."""
 
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
+    # Only a request with videos carries these.
+    video_frames: Optional[int] = None
+    video_seconds: Optional[Union[int, float]] = None
 
 
 @dataclass(frozen=True)
@@ -168,6 +172,8 @@ class Decision:
         safety: What the safety check found, or ``None`` when the server sent nothing
             (a self-hosted server, for example).
         raw: The parsed response body.
+        warnings: What the server says it changed when it read the request's videos (a
+            lower rate or resolution), as sent; empty when it sent none.
     """
 
     answers: Dict[str, AnyAnswer]
@@ -177,6 +183,7 @@ class Decision:
     latency_ms: Optional[Union[int, float]]
     safety: Optional[Safety]
     raw: Dict[str, Any] = field(repr=False)
+    warnings: List[str] = field(default_factory=list)
 
     def __getitem__(self, question_id: str) -> Any:
         # Typed as Any so that ``decision["route"].choice`` reads naturally under a type
@@ -315,14 +322,21 @@ def parse_decision(body: Any, headers: Mapping[str, str]) -> Decision:
         body = {}
     answers = body.get("answers")
     usage = body.get("usage") if isinstance(body.get("usage"), Mapping) else {}
+    warnings = body.get("warnings")
     return Decision(
         answers={str(k): parse_answer(v) for k, v in answers.items()} if isinstance(answers, Mapping) else {},
         model=body.get("model"),
-        usage=Usage(input_tokens=usage.get("input_tokens"), output_tokens=usage.get("output_tokens")),
+        usage=Usage(
+            input_tokens=usage.get("input_tokens"),
+            output_tokens=usage.get("output_tokens"),
+            video_frames=usage.get("video_frames"),
+            video_seconds=usage.get("video_seconds"),
+        ),
         request_id=headers.get("x-request-id"),
         latency_ms=parse_latency(headers.get("x-decisionnode-latency-ms")),
         safety=parse_safety(headers.get("x-decisionnode-safety")),
         raw=dict(body),
+        warnings=[w for w in warnings if isinstance(w, str)] if isinstance(warnings, list) else [],
     )
 
 

@@ -4,6 +4,31 @@ All notable changes to this package are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - Unreleased
+
+Implements version 1.2 of the SDK specification (`SPEC_VERSION` is `"1.2"`) and passes
+conformance suite 1.7.
+
+### Added
+
+- Videos sent as frames: `Video(id, frames, fps, start, end)` and `VideoFrame(t, data,
+  media_type)`, taken by `decide`, `systemone`, `check`, `classify`, `score`, `number`,
+  `gate`, `decide_many` requests, batch requests and `check_request` as `videos`. A frame's
+  data is bytes (its type read from the first bytes) or base64 text with its media type.
+  Frames always go inline.
+- Before anything is sent: at most 4 videos, ids unique across images and videos, frame
+  times of at least 0 and strictly increasing, JPEG, PNG or WebP frames, `fps` above 0 and
+  at most 4, and `end` after `start`, each raising `BadRequestError` with the API's
+  message. VideoFrame limits are the API's.
+- `Decision.usage.video_frames`, `Decision.usage.video_seconds` (`None` when absent) and
+  `Decision.warnings` (an empty list when absent).
+
+### Changed
+
+- A request holds up to 16 images (4 before); the 17th raises `BadRequestError` with
+  `Too many images: 17, the limit is 16.` before anything is sent. Up to 16 images are
+  uploaded through one presign.
+
 ## [0.1.0] - Unreleased
 
 First version. Implements version 1.1 of the specification shared by every official

@@ -14,7 +14,6 @@ import base64
 import hashlib
 import http.client
 import inspect
-import itertools
 import json
 import os
 import re
@@ -23,7 +22,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 from urllib.parse import parse_qs, quote, urlsplit
 
 import httpx
@@ -251,7 +250,13 @@ def norm_decision(d: dn.Decision) -> Dict[str, Any]:
         "model": d.model,
         "request_id": d.request_id,
         "latency_ms": d.latency_ms,
-        "usage": {"input_tokens": d.usage.input_tokens, "output_tokens": d.usage.output_tokens},
+        "usage": {
+            "input_tokens": d.usage.input_tokens,
+            "output_tokens": d.usage.output_tokens,
+            "video_frames": d.usage.video_frames,
+            "video_seconds": d.usage.video_seconds,
+        },
+        "warnings": d.warnings,
         "safety": norm_safety(d.safety),
         "answers": {k: norm_answer(v) for k, v in d.answers.items()},
         "raw": d.raw,
@@ -401,6 +406,20 @@ def decode(value: Any, ctx: Dict[str, Any]) -> Any:
             return dn.score(args.get("instructions"), args["levels"])
         if key == "$number":
             return dn.number(args.get("instructions"), args.get("min"), args.get("max"), args.get("step"))
+        if key == "$video":
+            args = {k: decode(v, ctx) for k, v in args.items()}
+            extra = {k: args[k] for k in ("fps", "start", "end") if k in args}
+            return dn.Video(args["id"], args["frames"], **extra)
+        if key == "$frame":
+            assert SUITE is not None
+            args = {k: decode(v, ctx) for k, v in args.items()}
+            if "path" in args:
+                data: Any = (SUITE / args["path"]).read_bytes()
+            elif "data_base64" in args:
+                data = base64.b64decode(args["data_base64"])
+            else:
+                data = args["data_text"]
+            return dn.VideoFrame(args["t"], data, args.get("media_type"))
         if key == "$image":
             assert SUITE is not None
             args = {k: decode(v, ctx) for k, v in args.items()}
@@ -736,18 +755,31 @@ def check_request_list(expected: List[Dict[str, Any]], log: List[Dict[str, Any]]
         j = i
         while j < len(expected) and expected[j].get("parallel"):
             j += 1
-        # Requests sent in parallel may arrive in any order: one assignment must hold.
-        reasons = []
-        for perm in itertools.permutations(range(i, j)):
-            try:
-                for k, g in zip(range(i, j), perm):
-                    check_request(expected[k], log[g], "requests[%d]" % k)
-                break
-            except Fail as exc:
-                reasons.append(str(exc))
-        else:
+        # Requests sent in parallel may arrive in any order: one assignment must hold,
+        # found by backtracking over the requests not yet taken (never every order: a
+        # case may hold sixteen parallel PUTs).
+        reasons: List[str] = []
+        if not _assign(expected, log, i, j, i, set(), reasons):
             raise Fail("no order of the parallel requests matches: " + reasons[0])
         i = j
+
+
+def _assign(expected: List[Any], log: List[Any], i: int, j: int, k: int, used: Set[int], reasons: List[str]) -> bool:
+    if k == j:
+        return True
+    for g in range(i, j):
+        if g in used:
+            continue
+        try:
+            check_request(expected[k], log[g], "requests[%d]" % k)
+        except Fail as exc:
+            reasons.append(str(exc))
+            continue
+        used.add(g)
+        if _assign(expected, log, i, j, k + 1, used, reasons):
+            return True
+        used.discard(g)
+    return False
 
 
 def check_sequence(expected: List[Dict[str, Any]], log: List[Dict[str, Any]]) -> None:

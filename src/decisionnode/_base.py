@@ -252,6 +252,7 @@ def decide_body(
     wires: Sequence[Mapping[str, Any]],
     model: Optional[str],
     default_model: str,
+    videos: Sequence[Mapping[str, Any]] = (),
 ) -> Dict[str, Any]:
     body: Dict[str, Any] = {
         "model": model or default_model,
@@ -260,6 +261,8 @@ def decide_body(
     }
     if wires:
         body["images"] = list(wires)
+    if videos:
+        body["videos"] = list(videos)
     return body
 
 
@@ -275,7 +278,7 @@ def systemone_questions(questions: Mapping[str, Any]) -> Dict[str, Any]:
     return out
 
 
-DECIDE_KEYS = frozenset({"state", "questions", "images", "model"})
+DECIDE_KEYS = frozenset({"state", "questions", "images", "videos", "model"})
 
 
 def should_retry(policy: str, status: int, error: DecisionNodeError) -> bool:

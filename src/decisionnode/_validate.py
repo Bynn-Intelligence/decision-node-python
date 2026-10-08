@@ -30,7 +30,7 @@ __all__ = [
     "MAX_IMAGES",
 ]
 
-MAX_IMAGES = 4
+MAX_IMAGES = 16
 MAX_CHOICE_OPTIONS = 255
 MAX_SCORE_LEVELS = 10
 MAX_GRID_VALUES = 4096
@@ -576,8 +576,8 @@ def check_images(images: Sequence[Any], limits: Optional[Limits] = None) -> None
     biggest = held.get("max_image_bytes") or MAX_IMAGE_BYTES
     if len(images) > most:
         raise usage_error(
-            "Too many images. Must have at most %d images." % most,
-            "a request takes up to %d images, got %d" % (most, len(images)),
+            "Too many images: %d, the limit is %d." % (len(images), most),
+            "%d images, the limit is %d" % (len(images), most),
         )
     seen: Set[str] = set()
     for i, img in enumerate(images):

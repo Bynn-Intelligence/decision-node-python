@@ -19,9 +19,9 @@ permissions:
   contents: read
 
 env:
-  # The conformance suite commit this SDK is tested against (suite 1.6, for specification
-  # 1.1). Change it here only.
-  CONFORMANCE_REF: f3138afe4360ec9f94ff740901498a2ef07b3ea5
+  # The conformance suite commit this SDK is tested against (suite 1.7, for specification
+  # 1.2). Change it here only.
+  CONFORMANCE_REF: ab58490ec38b2c61327921544aacbfed6bfaa4ae
   UV_VERSION: "0.7.13"
 
 concurrency:

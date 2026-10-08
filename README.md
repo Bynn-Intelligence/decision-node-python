@@ -136,6 +136,8 @@ The thresholds are yours: the SDK never turns a probability into a decision.
 | `answers` | The answers by question id. `d["route"]` is `d.answers["route"]`. |
 | `model` | The model version that answered. |
 | `usage.input_tokens`, `usage.output_tokens` | Token counts, or `None` when the server sent none (never `0` in their place). |
+| `usage.video_frames`, `usage.video_seconds` | For a request with videos: the frames the server read and the seconds of video they cover; `None` otherwise. |
+| `warnings` | What the server changed when it read the request's videos (a lower rate or size), as sent; an empty list when there is nothing to say. |
 | `request_id` | The request id. Quote it when you contact support. |
 | `latency_ms` | The server's own time for the request, or `None` when the server sent none. |
 | `safety` | What the safety check found (below), or `None`. |
@@ -202,7 +204,7 @@ The other forms:
 
 Local images (a path or data) are checked before anything is sent, without decoding them:
 JPEG, PNG or WebP by their first bytes (a `media_type` you give must match them), at most
-10 MB each, at most 40 megapixels, read from the image's header. A request holds at most 4
+10 MB each, at most 40 megapixels, read from the image's header. A request holds at most 16
 images, URLs included. A file that cannot be read raises `ValueError` when the `Image` is
 made; an image the API would refuse raises `BadRequestError` before any request.
 
@@ -233,6 +235,44 @@ d = dn.decide(state="...", images=[Image("front", upload_id=upload_ids[0])], que
 
 `upload(images)` uploads whatever the size and returns one `upload_id` per image. An
 upload can be used for one hour by any key of your workspace.
+
+## Videos
+
+Video is available when the API enables it. A video is sent as the frames you sampled,
+each with its time in seconds, and the questions see them as one video, in order and with
+their times. Only frames are sent: no video file, no video URL and no sound go to the API.
+
+```python
+from decisionnode import VideoFrame, Video
+
+frames = [VideoFrame(t, jpeg) for t, jpeg in camera_frames]  # (seconds, JPEG bytes) you already hold
+
+d = dn.decide(
+    state="Warehouse camera 4, loading dock, shift B.",
+    videos=[Video("dock", frames, fps=2)],
+    questions={
+        "fall": truth("Does a person fall in the video?"),
+        "forklifts": number("How many forklifts pass the door?", min=0, max=50),
+    },
+)
+d["fall"].truth
+d.usage.video_frames, d.warnings
+```
+
+| Argument | |
+|---|---|
+| `Video(id, frames, fps=None, start=None, end=None)` | `id` unique across the request's images and videos. `fps` caps the frames read a second (above 0, at most 4; the API reads 2 by default). `start` and `end` set the window read, on the frames' own times; `end` is after `start`. Left out, the API's defaults apply |
+| `VideoFrame(t, data, media_type=None)` | `t` in seconds, at least 0, larger than the frame before it. `data` is JPEG, PNG or WebP bytes (the type is read from them) or base64 text with its `media_type` |
+
+A request holds at most 4 videos. The ids, times, media types, `fps` and the window are
+checked before anything is sent, and a fault raises `BadRequestError` as the API would. The
+frame limits are the API's and are published with it. Frames always go inline: they are
+never uploaded or resized. `decide`, `systemone`, the helpers, `decide_many` and batch
+requests take `videos`; sessions do not.
+
+To turn a video file into frames, use the `dn` command-line tool (`dn truth "Does a person
+fall?" --video dock.mp4 --fps 2`); it runs FFmpeg on your machine and sends only the frames.
+This package has no such dependency.
 
 ## Sessions
 
@@ -605,7 +645,7 @@ The tests include the DecisionNode SDK conformance suite
 (`Bynn-Intelligence/decision-node-conformance`), run with both the sync and the async
 client. Set `DECISIONNODE_CONFORMANCE_DIR` to a checkout of it, or check it out at
 `conformance/` in this repository; without it the conformance tests fail rather than
-skip. The tests pass suite 1.6; CI checks the suite out at the commit pinned in
+skip. The tests pass suite 1.7; CI checks the suite out at the commit pinned in
 `CONFORMANCE_REF` in `.github/workflows/ci.yml`, with every action pinned to a commit SHA
 and no checkout keeping its credentials.
 
@@ -613,7 +653,7 @@ and no checkout keeping its credentials.
 DECISIONNODE_CONFORMANCE_DIR=/path/to/decision-node-conformance uv run pytest
 ```
 
-This package implements version 1.1 of the specification shared by every official
+This package implements version 1.2 of the specification shared by every official
 DecisionNode SDK, exported as `decisionnode.SPEC_VERSION`.
 
 ## License

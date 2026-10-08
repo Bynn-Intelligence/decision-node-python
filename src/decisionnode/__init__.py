@@ -62,6 +62,7 @@ from ._types import (
     Usage,
 )
 from ._version import SPEC_VERSION, __version__
+from ._videos import Video, VideoFrame
 
 __all__ = [
     "__version__",
@@ -83,6 +84,8 @@ __all__ = [
     "ScoreQuestion",
     "NumberQuestion",
     "Image",
+    "Video",
+    "VideoFrame",
     # results
     "Decision",
     "Answer",

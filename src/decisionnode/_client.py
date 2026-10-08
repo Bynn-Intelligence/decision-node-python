@@ -87,16 +87,17 @@ from ._uploads import (
     stripe,
 )
 from ._validate import check_frame, check_images, check_lines, check_list_query, check_request, check_session_open
+from ._videos import VideoInput, check_videos, video_list
 
 __all__ = ["DecisionNode", "AsyncDecisionNode", "DecideRequest", "DecisionResult", "BatchRequest"]
 
 DecideRequest = Mapping[str, Any]
 """The arguments of one ``decide`` call for ``decide_many``: ``state``, ``questions``,
-and optionally ``images`` and ``model``."""
+and optionally ``images``, ``videos`` and ``model``."""
 
 BatchRequest = Mapping[str, Any]
 """One request of a batch: ``custom_id``, ``state``, ``questions``, and optionally
-``images`` and ``model``."""
+``images``, ``videos`` and ``model``."""
 
 DecisionResult = Union[Decision, DecisionNodeError]
 """One result of ``decide_many``: the :class:`Decision`, or the error that request ended with."""
@@ -296,15 +297,22 @@ class _Prepared:
     is written once the uploads are done.
     """
 
-    __slots__ = ("path", "state", "questions", "images", "model", "plan", "content")
+    __slots__ = ("path", "state", "questions", "images", "videos", "model", "plan", "content")
 
     def __init__(
-        self, path: str, state: Any, questions: Dict[str, Any], images: List[Any], model: Optional[str]
+        self,
+        path: str,
+        state: Any,
+        questions: Dict[str, Any],
+        images: List[Any],
+        model: Optional[str],
+        videos: List[Dict[str, Any]],
     ) -> None:
         self.path = path
         self.state = state
         self.questions = questions
         self.images = images
+        self.videos = videos
         self.model = model
         self.plan: Optional[ImagePlan] = None
         self.content: Optional[bytes] = None
@@ -387,12 +395,14 @@ class _Common:
         """Local images of one request totalling fewer bytes than this go inline."""
         return self._settings.inline_threshold
 
-    def _prepare(self, state: Any, questions: Any, images: Any, model: Optional[str], path: str) -> _Prepared:
+    def _prepare(
+        self, state: Any, questions: Any, images: Any, model: Optional[str], path: str, videos: Any = None
+    ) -> _Prepared:
         """Check a request against the API's fixed rules and plan its images, all before
         any request. Argument problems raise ``ValueError``; content the API would refuse
         raises its error class."""
-        qs, imgs = self._check_decision(state, questions, images, model, path)
-        prep = _Prepared(path, state, qs, imgs, model)
+        qs, imgs, vids = self._check_decision(state, questions, images, model, path, videos=videos)
+        prep = _Prepared(path, state, qs, imgs, model, vids)
         plan = self._plan(imgs)
         prep.plan = plan
         if plan.uploads:
@@ -404,26 +414,42 @@ class _Common:
         return prep
 
     def _check_decision(
-        self, state: Any, questions: Any, images: Any, model: Optional[str], path: str, encode: bool = False
-    ) -> Tuple[Dict[str, Any], List[Any]]:
-        """Every local check of a decide-like request; the questions as sent and the images."""
+        self,
+        state: Any,
+        questions: Any,
+        images: Any,
+        model: Optional[str],
+        path: str,
+        encode: bool = False,
+        videos: Any = None,
+    ) -> Tuple[Dict[str, Any], List[Any], List[Dict[str, Any]]]:
+        """Every local check of a decide-like request; the questions as sent, the images
+        and the videos in wire form."""
         systemone = path == _base.SYSTEMONE_PATH
         qs = _base.check_question_map(questions)
         imgs = _base.image_list(images)
+        vids = video_list(videos)
         if systemone:
             qs = _base.systemone_questions(qs)
-        # The body as it will be sent, its images as placeholders so the nesting counts them.
-        probe = _base.decide_body(state, qs, [{"id": ""} for _ in imgs], model, self._settings.model)
+        # The body as it will be sent, its images and videos as placeholders so the
+        # nesting counts them.
+        probe = _base.decide_body(
+            state, qs, [{"id": ""} for _ in imgs], model, self._settings.model, [{"id": ""} for _ in vids]
+        )
         limits = self._limits(probe["model"])
         check_request(probe, systemone, limits)
         check_images(imgs, limits)
+        check_videos(vids, imgs)
         if encode:
             # A value that cannot be sent as JSON is an argument error, found now too.
             _base.encode(probe)
-        return qs, imgs
+            _base.encode(vids)
+        return qs, imgs, vids
 
     def _body(self, prep: _Prepared, wires: Sequence[Mapping[str, Any]]) -> bytes:
-        return _base.encode(_base.decide_body(prep.state, prep.questions, wires, prep.model, self._settings.model))
+        return _base.encode(
+            _base.decide_body(prep.state, prep.questions, wires, prep.model, self._settings.model, prep.videos)
+        )
 
     def _prepare_many(self, requests: Iterable[DecideRequest], concurrency: int) -> List[_Prepared]:
         # Every request is checked before the first is sent, so a bad one fails the call
@@ -438,6 +464,7 @@ class _Common:
                         req.get("images"),
                         req.get("model"),
                         _base.DECIDE_PATH,
+                        req.get("videos"),
                     )
                 )
             except ValueError as exc:
@@ -475,7 +502,7 @@ class _Common:
         """
         if method in ("decide", "systemone"):
             path = _base.DECIDE_PATH if method == "decide" else _base.SYSTEMONE_PATH
-            unknown = set(arguments) - {"state", "questions", "images", "model"}
+            unknown = set(arguments) - {"state", "questions", "images", "videos", "model"}
             if unknown:
                 raise TypeError("%s() got unexpected arguments %s" % (method, ", ".join(sorted(unknown))))
             self._check_decision(
@@ -485,6 +512,7 @@ class _Common:
                 arguments.get("model"),
                 path,
                 encode=True,
+                videos=arguments.get("videos"),
             )
         elif method == "open_session":
             unknown = set(arguments) - SESSION_KEYS
@@ -511,7 +539,9 @@ class _Common:
                 % (method,)
             )
 
-    def _check_lines(self, items: List[Any], allow_empty: bool) -> List[Tuple[Any, Dict[str, Any], List[Any]]]:
+    def _check_lines(
+        self, items: List[Any], allow_empty: bool
+    ) -> List[Tuple[Any, Dict[str, Any], List[Any], List[Dict[str, Any]]]]:
         """The local checks of a batch call's requests, before anything is sent or uploaded."""
         check_lines(items, allow_empty, self._limits())
         checked = []
@@ -519,16 +549,20 @@ class _Common:
             try:
                 qs = _base.check_question_map(req.get("questions"))
                 imgs = _base.image_list(req.get("images"))
+                vids = video_list(req.get("videos"))
             except ValueError as exc:
                 raise ValueError("batch request %d: %s" % (i, exc)) from exc
             model = req.get("model") or self._settings.model
             probe: Dict[str, Any] = {"model": model, "state": req.get("state"), "questions": qs}
             if imgs:
                 probe["images"] = [{"id": ""} for _ in imgs]
+            if vids:
+                probe["videos"] = [{"id": ""} for _ in vids]
             limits = self._limits(model)
             check_request(probe, False, limits)
             check_images(imgs, limits)
-            checked.append((req, qs, imgs))
+            check_videos(vids, imgs)
+            checked.append((req, qs, imgs, vids))
         return checked
 
     def __repr__(self) -> str:
@@ -903,8 +937,10 @@ class DecisionNode(_Common):
         status, headers, text = self._execute(prep)
         return parse_decision(_base.parse_json(status, headers, text), headers)
 
-    def _ask(self, question_id: str, question: Question, kind: Type[_A], state: Any, images: Any, model: Any) -> _A:
-        prep = self._prepare(state, {question_id: question}, images, model, _base.DECIDE_PATH)
+    def _ask(
+        self, question_id: str, question: Question, kind: Type[_A], state: Any, images: Any, model: Any, videos: Any
+    ) -> _A:
+        prep = self._prepare(state, {question_id: question}, images, model, _base.DECIDE_PATH, videos)
         status, headers, text = self._execute(prep)
         decision = parse_decision(_base.parse_json(status, headers, text), headers)
         return _single(decision, question_id, kind, status, headers)
@@ -917,6 +953,8 @@ class DecisionNode(_Common):
         questions: Optional[Mapping[str, Question]] = None,
         images: Optional[Sequence[ImageInput]] = None,
         model: Optional[str] = None,
+        *,
+        videos: Optional[Sequence[VideoInput]] = None,
     ) -> Decision:
         """Ask one or more questions about a state in one request.
 
@@ -925,7 +963,9 @@ class DecisionNode(_Common):
                 the questions are answered from their own text.
             questions: Question id to question, built with :func:`truth`,
                 :func:`choice`, :func:`score` and :func:`number` or written in wire form.
-            images: Up to four :class:`Image` objects every question can see.
+            images: Up to 16 :class:`Image` objects every question can see.
+            videos: Up to 4 :class:`Video` objects (frames with their times) every question
+                can see.
             model: The model for this call. Default (also for ``""``): the client's model.
 
         Returns:
@@ -935,7 +975,7 @@ class DecisionNode(_Common):
             BadRequestError, ValidationError: before anything is sent, for a request the
                 API would refuse by its fixed rules (an image, a question's limits).
         """
-        return self._decision(self._prepare(state, questions, images, model, _base.DECIDE_PATH))
+        return self._decision(self._prepare(state, questions, images, model, _base.DECIDE_PATH, videos))
 
     def systemone(
         self,
@@ -943,11 +983,13 @@ class DecisionNode(_Common):
         questions: Optional[Mapping[str, Question]] = None,
         images: Optional[Sequence[ImageInput]] = None,
         model: Optional[str] = None,
+        *,
+        videos: Optional[Sequence[VideoInput]] = None,
     ) -> Decision:
         """Ask on ``POST /v1/systemone``, the strict path: ``truth``, ``choice`` and
         ``score`` questions only, ``model`` always sent. ``truth`` answers read as
         :class:`TruthAnswer`."""
-        return self._decision(self._prepare(state, questions, images, model, _base.SYSTEMONE_PATH))
+        return self._decision(self._prepare(state, questions, images, model, _base.SYSTEMONE_PATH, videos))
 
     def decide_many(
         self,
@@ -986,13 +1028,14 @@ class DecisionNode(_Common):
         if_false: Any = None,
         *,
         images: Optional[Sequence[ImageInput]] = None,
+        videos: Optional[Sequence[VideoInput]] = None,
         model: Optional[str] = None,
     ) -> TruthAnswer:
         """Ask one ``truth`` question. Returns its :class:`TruthAnswer`.
 
         Raises :class:`ServerError` when that answer is missing or malformed.
         """
-        return self._ask("check", _truth(instructions, if_true, if_false), TruthAnswer, state, images, model)
+        return self._ask("check", _truth(instructions, if_true, if_false), TruthAnswer, state, images, model, videos)
 
     def classify(
         self,
@@ -1001,13 +1044,14 @@ class DecisionNode(_Common):
         options: Union[Mapping[str, Any], Iterable[str], None] = None,
         *,
         images: Optional[Sequence[ImageInput]] = None,
+        videos: Optional[Sequence[VideoInput]] = None,
         model: Optional[str] = None,
     ) -> ChoiceAnswer:
         """Ask one ``choice`` question. Returns its :class:`ChoiceAnswer`.
 
         Raises :class:`ServerError` when that answer is missing or malformed.
         """
-        return self._ask("classify", _choice(instructions, options), ChoiceAnswer, state, images, model)
+        return self._ask("classify", _choice(instructions, options), ChoiceAnswer, state, images, model, videos)
 
     def score(
         self,
@@ -1016,13 +1060,14 @@ class DecisionNode(_Common):
         levels: Optional[Sequence[Any]] = None,
         *,
         images: Optional[Sequence[ImageInput]] = None,
+        videos: Optional[Sequence[VideoInput]] = None,
         model: Optional[str] = None,
     ) -> ScoreAnswer:
         """Ask one ``score`` question. Returns its :class:`ScoreAnswer`.
 
         Raises :class:`ServerError` when that answer is missing or malformed.
         """
-        return self._ask("score", _score(instructions, levels), ScoreAnswer, state, images, model)
+        return self._ask("score", _score(instructions, levels), ScoreAnswer, state, images, model, videos)
 
     def number(
         self,
@@ -1033,13 +1078,14 @@ class DecisionNode(_Common):
         step: Union[int, float, None] = None,
         *,
         images: Optional[Sequence[ImageInput]] = None,
+        videos: Optional[Sequence[VideoInput]] = None,
         model: Optional[str] = None,
     ) -> NumberAnswer:
         """Ask one ``number`` question. Returns its :class:`NumberAnswer`.
 
         Raises :class:`ServerError` when that answer is missing or malformed.
         """
-        return self._ask("number", _number(instructions, min, max, step), NumberAnswer, state, images, model)
+        return self._ask("number", _number(instructions, min, max, step), NumberAnswer, state, images, model, videos)
 
     def gate(
         self,
@@ -1047,6 +1093,7 @@ class DecisionNode(_Common):
         context: Any = None,
         *,
         images: Optional[Sequence[ImageInput]] = None,
+        videos: Optional[Sequence[VideoInput]] = None,
         model: Optional[str] = None,
     ) -> Decision:
         """Judge an action before it runs.
@@ -1056,7 +1103,7 @@ class DecisionNode(_Common):
         ``verdict``, a choice of ``allow``, ``confirm`` or ``block``. What to do with
         the answers is up to your code.
         """
-        return self.decide(_base.gate_state(action, context), _base.gate_questions(), images, model)
+        return self.decide(_base.gate_state(action, context), _base.gate_questions(), images, model, videos=videos)
 
     def models(self) -> List[ModelInfo]:
         """The models this key may use, with the limits each one publishes."""
@@ -1180,9 +1227,9 @@ class Batches:
         client = self._client
         checked = client._check_lines(list(requests), allow_empty)
         out = []
-        for req, qs, imgs in checked:
+        for req, qs, imgs, vids in checked:
             plan = client._plan(imgs)
-            out.append(line_bytes(req, qs, client._finish(plan), client._settings.model))
+            out.append(line_bytes(req, qs, client._finish(plan), client._settings.model, vids))
         return out
 
     def create(self, requests: Iterable[BatchRequest] = ()) -> Batch:
@@ -1543,9 +1590,9 @@ class AsyncDecisionNode(_Common):
         return parse_decision(_base.parse_json(status, headers, text), headers)
 
     async def _ask(
-        self, question_id: str, question: Question, kind: Type[_A], state: Any, images: Any, model: Any
+        self, question_id: str, question: Question, kind: Type[_A], state: Any, images: Any, model: Any, videos: Any
     ) -> _A:
-        prep = self._prepare(state, {question_id: question}, images, model, _base.DECIDE_PATH)
+        prep = self._prepare(state, {question_id: question}, images, model, _base.DECIDE_PATH, videos)
         status, headers, text = await self._execute(prep)
         decision = parse_decision(_base.parse_json(status, headers, text), headers)
         return _single(decision, question_id, kind, status, headers)
@@ -1558,9 +1605,11 @@ class AsyncDecisionNode(_Common):
         questions: Optional[Mapping[str, Question]] = None,
         images: Optional[Sequence[ImageInput]] = None,
         model: Optional[str] = None,
+        *,
+        videos: Optional[Sequence[VideoInput]] = None,
     ) -> Decision:
         """Ask one or more questions about a state in one request. See :meth:`DecisionNode.decide`."""
-        return await self._decision(self._prepare(state, questions, images, model, _base.DECIDE_PATH))
+        return await self._decision(self._prepare(state, questions, images, model, _base.DECIDE_PATH, videos))
 
     async def systemone(
         self,
@@ -1568,9 +1617,11 @@ class AsyncDecisionNode(_Common):
         questions: Optional[Mapping[str, Question]] = None,
         images: Optional[Sequence[ImageInput]] = None,
         model: Optional[str] = None,
+        *,
+        videos: Optional[Sequence[VideoInput]] = None,
     ) -> Decision:
         """Ask on ``POST /v1/systemone``. See :meth:`DecisionNode.systemone`."""
-        return await self._decision(self._prepare(state, questions, images, model, _base.SYSTEMONE_PATH))
+        return await self._decision(self._prepare(state, questions, images, model, _base.SYSTEMONE_PATH, videos))
 
     async def decide_many(
         self,
@@ -1602,13 +1653,16 @@ class AsyncDecisionNode(_Common):
         if_false: Any = None,
         *,
         images: Optional[Sequence[ImageInput]] = None,
+        videos: Optional[Sequence[VideoInput]] = None,
         model: Optional[str] = None,
     ) -> TruthAnswer:
         """Ask one ``truth`` question. Returns its :class:`TruthAnswer`.
 
         Raises :class:`ServerError` when that answer is missing or malformed.
         """
-        return await self._ask("check", _truth(instructions, if_true, if_false), TruthAnswer, state, images, model)
+        return await self._ask(
+            "check", _truth(instructions, if_true, if_false), TruthAnswer, state, images, model, videos
+        )
 
     async def classify(
         self,
@@ -1617,13 +1671,14 @@ class AsyncDecisionNode(_Common):
         options: Union[Mapping[str, Any], Iterable[str], None] = None,
         *,
         images: Optional[Sequence[ImageInput]] = None,
+        videos: Optional[Sequence[VideoInput]] = None,
         model: Optional[str] = None,
     ) -> ChoiceAnswer:
         """Ask one ``choice`` question. Returns its :class:`ChoiceAnswer`.
 
         Raises :class:`ServerError` when that answer is missing or malformed.
         """
-        return await self._ask("classify", _choice(instructions, options), ChoiceAnswer, state, images, model)
+        return await self._ask("classify", _choice(instructions, options), ChoiceAnswer, state, images, model, videos)
 
     async def score(
         self,
@@ -1632,13 +1687,14 @@ class AsyncDecisionNode(_Common):
         levels: Optional[Sequence[Any]] = None,
         *,
         images: Optional[Sequence[ImageInput]] = None,
+        videos: Optional[Sequence[VideoInput]] = None,
         model: Optional[str] = None,
     ) -> ScoreAnswer:
         """Ask one ``score`` question. Returns its :class:`ScoreAnswer`.
 
         Raises :class:`ServerError` when that answer is missing or malformed.
         """
-        return await self._ask("score", _score(instructions, levels), ScoreAnswer, state, images, model)
+        return await self._ask("score", _score(instructions, levels), ScoreAnswer, state, images, model, videos)
 
     async def number(
         self,
@@ -1649,13 +1705,16 @@ class AsyncDecisionNode(_Common):
         step: Union[int, float, None] = None,
         *,
         images: Optional[Sequence[ImageInput]] = None,
+        videos: Optional[Sequence[VideoInput]] = None,
         model: Optional[str] = None,
     ) -> NumberAnswer:
         """Ask one ``number`` question. Returns its :class:`NumberAnswer`.
 
         Raises :class:`ServerError` when that answer is missing or malformed.
         """
-        return await self._ask("number", _number(instructions, min, max, step), NumberAnswer, state, images, model)
+        return await self._ask(
+            "number", _number(instructions, min, max, step), NumberAnswer, state, images, model, videos
+        )
 
     async def gate(
         self,
@@ -1663,10 +1722,13 @@ class AsyncDecisionNode(_Common):
         context: Any = None,
         *,
         images: Optional[Sequence[ImageInput]] = None,
+        videos: Optional[Sequence[VideoInput]] = None,
         model: Optional[str] = None,
     ) -> Decision:
         """Judge an action before it runs. See :meth:`DecisionNode.gate`."""
-        return await self.decide(_base.gate_state(action, context), _base.gate_questions(), images, model)
+        return await self.decide(
+            _base.gate_state(action, context), _base.gate_questions(), images, model, videos=videos
+        )
 
     async def models(self) -> List[ModelInfo]:
         """The models this key may use, with the limits each one publishes."""
@@ -1768,9 +1830,9 @@ class AsyncBatches:
         client = self._client
         checked = client._check_lines(list(requests), allow_empty)
         out = []
-        for req, qs, imgs in checked:
+        for req, qs, imgs, vids in checked:
             plan = client._plan(imgs)
-            out.append(line_bytes(req, qs, await client._finish(plan), client._settings.model))
+            out.append(line_bytes(req, qs, await client._finish(plan), client._settings.model, vids))
         return out
 
     async def create(self, requests: Iterable[BatchRequest] = ()) -> Batch:
