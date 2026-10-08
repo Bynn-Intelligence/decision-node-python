@@ -21,9 +21,9 @@ from decisionnode._validate import (
 PNG = (Path(__file__).parent / "fixtures" / "rgb-3x5.png").read_bytes()
 
 
-def refused(questions: Dict[str, Any], systemone: bool = False) -> dn.DecisionNodeError:
+def refused(questions: Dict[str, Any]) -> dn.DecisionNodeError:
     with pytest.raises(dn.DecisionNodeError) as info:
-        check_questions(questions, systemone)
+        check_questions(questions)
     err = info.value
     # Raised before any request: no status, no request id.
     assert err.status is None and err.request_id is None
@@ -194,10 +194,6 @@ class TestQuestions:
         assert type(err) is dn.ValidationError
         assert len(err.entries or []) == 2
         assert err.reason == "question 'b': min 2 is above max 1 and 1 more"
-
-    def test_systemone_has_no_number_type(self) -> None:
-        err = refused({"n": dn.number(min=5, max=1)}, systemone=True)
-        assert (type(err), err.message, err.error_type) == (dn.BadRequestError, "Invalid request.", "api_usage_error")
 
     def test_held_model_limits_replace_the_documented_bounds(self) -> None:
         with pytest.raises(dn.BadRequestError, match="at most 2 choices"):

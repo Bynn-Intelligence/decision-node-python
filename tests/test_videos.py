@@ -100,16 +100,14 @@ def test_decide_sends_videos(mode: str) -> None:
     assert "videos" not in json.loads(h.recorder.requests[1].content)
 
 
-def test_helpers_systemone_and_many_send_videos(mode: str) -> None:
+def test_helpers_and_many_send_videos(mode: str) -> None:
     h = Harness(mode, ok())
     video = dn.Video("cam", frames(0))
-    h.call("systemone", "s", Q, videos=[video])
-    body = json.loads(h.recorder.requests[0].content)
-    assert body["videos"] == [video.to_dict()] and body["questions"]["q"]["type"] == "noul"
     h.call("check", "s", "Does smoke appear?", videos=[video])
-    assert json.loads(h.recorder.requests[1].content)["videos"] == [video.to_dict()]
+    assert json.loads(h.recorder.requests[0].content)["videos"] == [video.to_dict()]
     h.call("decide_many", [{"state": "a", "questions": Q, "videos": [video]}])
-    assert json.loads(h.recorder.requests[2].content)["videos"] == [video.to_dict()]
+    assert json.loads(h.recorder.requests[1].content)["videos"] == [video.to_dict()]
+    assert [r.url.path for r in h.recorder.requests] == ["/v1/decide", "/v1/decide"]
 
 
 def test_batch_line_carries_videos(mode: str) -> None:

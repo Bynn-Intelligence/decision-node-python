@@ -33,7 +33,7 @@ from ._errors import (
 )
 from ._images import DEFAULT_INLINE_THRESHOLD, Image
 from ._questions import Question, choice, score, truth
-from ._types import LEGACY_TRUTH, parse_safety
+from ._types import parse_safety
 from ._version import __version__
 
 logger = logging.getLogger("decisionnode")
@@ -56,7 +56,6 @@ MAX_BACKOFF = 8.0
 MAX_RETRY_AFTER = 60.0
 
 DECIDE_PATH = "/v1/decide"
-SYSTEMONE_PATH = "/v1/systemone"
 MODELS_PATH = "/v1/models"
 UPLOADS_PATH = "/v1/uploads"
 SESSIONS_PATH = "/v1/sessions"
@@ -264,18 +263,6 @@ def decide_body(
     if videos:
         body["videos"] = list(videos)
     return body
-
-
-def systemone_questions(questions: Mapping[str, Any]) -> Dict[str, Any]:
-    """The questions as /v1/systemone takes them: a ``truth`` question under that path's
-    wire name for the type; every other question as given."""
-    out: Dict[str, Any] = {}
-    for qid, q in questions.items():
-        if isinstance(q, Mapping) and q.get("type") == "truth":
-            q = dict(q)
-            q["type"] = LEGACY_TRUTH
-        out[qid] = q
-    return out
 
 
 DECIDE_KEYS = frozenset({"state", "questions", "images", "videos", "model"})

@@ -169,16 +169,6 @@ per request: a `Decision`, or the error that request ended with. Images with the
 bytes are uploaded once for all the requests. One failure does not stop
 the others.
 
-## The strict path
-
-```python
-d = dn.systemone(state="Refund my order now!", questions={"angry": truth("Is the customer angry?")})
-```
-
-`systemone(state, questions, images, model)` sends `POST /v1/systemone`, the strict form
-of `decide`: it takes `truth`, `choice` and `score` questions, no other field, and always
-a model (the client's when the call names none). Answers read as from `decide`.
-
 ## Images
 
 ```python
@@ -279,8 +269,7 @@ say which one you mean in the instructions ("the leftmost yellow package").
 A point or box question needs an image in the request. With two or more images, name the
 one to look in with `image`. These rules and `units` (`"pixels"` or `"normalized"`) are
 checked before anything is sent, and a fault raises `ValidationError` as the API would.
-`decide`, `decide_many` and batch requests take point and box questions; `systemone`
-does not.
+`decide`, `decide_many` and batch requests take point and box questions.
 
 ## Videos
 
@@ -313,8 +302,8 @@ The ids, times, media types, `fps` and the window are checked before anything is
 a fault raises `BadRequestError` as the API would. A request holds at most 4 videos; a fifth
 raises `ValidationError` (a `too_long` entry on the videos). The
 frame limits are the API's and are published with it. Frames always go inline: they are
-never uploaded or resized. `decide`, `systemone`, the helpers, `decide_many` and batch
-requests take `videos`; sessions do not.
+never uploaded or resized. `decide`, the helpers, `decide_many` and batch requests take
+`videos`; sessions do not.
 
 To turn a video file into frames, use the `dn` command-line tool (`dn truth "Does a person
 fall?" --video dock.mp4 --fps 2`); it runs FFmpeg on your machine and sends only the frames.
@@ -507,8 +496,8 @@ with no `status` and no `request_id`. The checks run in the API's order:
 - the shape of each question and of the state (`ValidationError`): a question that is not
   an object or has no `type`, values that must be a string, an object or an array, a
   choice or score without `criteria`, a score without levels, and every number grid rule;
-- the question limits (`BadRequestError`): an unknown type ("Invalid request.", also a
-  `number` question on `systemone`), a choice without options or with more than 255, a
+- the question limits (`BadRequestError`): an unknown type ("Invalid request."), a choice
+  without options or with more than 255, a
   score with more than 10 levels, a truth question with neither instructions nor
   criteria, a number question without instructions;
 - every image rule above, and for a URL: `https`, at most 2,048 characters, no user
@@ -535,7 +524,7 @@ session.check_frame({"battery": 0.31}, questions=["abort"])
 ```
 
 `check_request(method, **arguments)` runs every check the call `method` (`decide`,
-`systemone`, `open_session`, `batches.create` or `batches.add`) would run before sending,
+`open_session`, `batches.create` or `batches.add`) would run before sending,
 with the same arguments, and raises the same error; it sends nothing, uploads nothing and
 returns `None` when the request would go out. `Session.check_frame(...)` does the same for
 a frame. Neither makes a request, so neither is a coroutine on the async client.
@@ -691,7 +680,7 @@ The tests include the DecisionNode SDK conformance suite
 (`Bynn-Intelligence/decision-node-conformance`), run with both the sync and the async
 client. Set `DECISIONNODE_CONFORMANCE_DIR` to a checkout of it, or check it out at
 `conformance/` in this repository; without it the conformance tests fail rather than
-skip. The tests pass suite 1.8; CI checks the suite out at the commit pinned in
+skip. The tests pass suite 1.10; CI checks the suite out at the commit pinned in
 `CONFORMANCE_REF` in `.github/workflows/ci.yml`, with every action pinned to a commit SHA
 and no checkout keeping its credentials.
 

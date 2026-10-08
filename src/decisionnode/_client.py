@@ -435,19 +435,16 @@ class _Common:
     ) -> Tuple[Dict[str, Any], List[Any], List[Dict[str, Any]]]:
         """Every local check of a decide-like request; the questions as sent, the images
         and the videos in wire form."""
-        systemone = path == _base.SYSTEMONE_PATH
         qs = _base.check_question_map(questions)
         imgs = _base.image_list(images)
         vids = video_list(videos)
-        if systemone:
-            qs = _base.systemone_questions(qs)
         # The body as it will be sent, its images and videos as placeholders so the
         # nesting counts them.
         probe = _base.decide_body(
             state, qs, [{"id": ""} for _ in imgs], model, self._settings.model, [{"id": ""} for _ in vids]
         )
         limits = self._limits(probe["model"])
-        check_request(probe, systemone, limits, image_ids=_image_ids(imgs), tail=count_entries(imgs, vids, limits))
+        check_request(probe, limits, image_ids=_image_ids(imgs), tail=count_entries(imgs, vids, limits))
         check_images(imgs, limits)
         check_videos(vids, imgs)
         if encode:
@@ -505,13 +502,12 @@ class _Common:
         """Run every local check the call ``method`` would run before sending, with the
         same arguments, and raise the same error; send and upload nothing.
 
-        ``method`` is ``"decide"``, ``"systemone"``, ``"open_session"``,
-        ``"batches.create"`` or ``"batches.add"`` (its ``batch_id`` plays no part).
+        ``method`` is ``"decide"``, ``"open_session"``, ``"batches.create"`` or
+        ``"batches.add"`` (its ``batch_id`` plays no part).
         Limits held from an earlier ``models()`` call are checked too. Returns ``None``
         when the request would be sent. Never makes a request, also on the async client.
         """
-        if method in ("decide", "systemone"):
-            path = _base.DECIDE_PATH if method == "decide" else _base.SYSTEMONE_PATH
+        if method == "decide":
             unknown = set(arguments) - {"state", "questions", "images", "videos", "model"}
             if unknown:
                 raise TypeError("%s() got unexpected arguments %s" % (method, ", ".join(sorted(unknown))))
@@ -520,7 +516,7 @@ class _Common:
                 arguments.get("questions"),
                 arguments.get("images"),
                 arguments.get("model"),
-                path,
+                _base.DECIDE_PATH,
                 encode=True,
                 videos=arguments.get("videos"),
             )
@@ -545,8 +541,7 @@ class _Common:
             self._check_lines(list(arguments.get("requests") or ()), method == "batches.create")
         else:
             raise ValueError(
-                "check_request() takes decide, systemone, open_session, batches.create or batches.add, got %r"
-                % (method,)
+                "check_request() takes decide, open_session, batches.create or batches.add, got %r" % (method,)
             )
 
     def _check_lines(
@@ -569,7 +564,7 @@ class _Common:
             if vids:
                 probe["videos"] = [{"id": ""} for _ in vids]
             limits = self._limits(model)
-            check_request(probe, False, limits, image_ids=_image_ids(imgs), tail=count_entries(imgs, vids, limits))
+            check_request(probe, limits, image_ids=_image_ids(imgs), tail=count_entries(imgs, vids, limits))
             check_images(imgs, limits)
             check_videos(vids, imgs)
             checked.append((req, qs, imgs, vids))
@@ -1000,20 +995,6 @@ class DecisionNode(_Common):
                 API would refuse by its fixed rules (an image, a question's limits).
         """
         return self._decision(self._prepare(state, questions, images, model, _base.DECIDE_PATH, videos))
-
-    def systemone(
-        self,
-        state: Any = UNSET,
-        questions: Optional[Mapping[str, Question]] = None,
-        images: Optional[Sequence[ImageInput]] = None,
-        model: Optional[str] = None,
-        *,
-        videos: Optional[Sequence[VideoInput]] = None,
-    ) -> Decision:
-        """Ask on ``POST /v1/systemone``, the strict path: ``truth``, ``choice`` and
-        ``score`` questions only, ``model`` always sent. ``truth`` answers read as
-        :class:`TruthAnswer`."""
-        return self._decision(self._prepare(state, questions, images, model, _base.SYSTEMONE_PATH, videos))
 
     def decide_many(
         self,
@@ -1634,18 +1615,6 @@ class AsyncDecisionNode(_Common):
     ) -> Decision:
         """Ask one or more questions about a state in one request. See :meth:`DecisionNode.decide`."""
         return await self._decision(self._prepare(state, questions, images, model, _base.DECIDE_PATH, videos))
-
-    async def systemone(
-        self,
-        state: Any = UNSET,
-        questions: Optional[Mapping[str, Question]] = None,
-        images: Optional[Sequence[ImageInput]] = None,
-        model: Optional[str] = None,
-        *,
-        videos: Optional[Sequence[VideoInput]] = None,
-    ) -> Decision:
-        """Ask on ``POST /v1/systemone``. See :meth:`DecisionNode.systemone`."""
-        return await self._decision(self._prepare(state, questions, images, model, _base.SYSTEMONE_PATH, videos))
 
     async def decide_many(
         self,

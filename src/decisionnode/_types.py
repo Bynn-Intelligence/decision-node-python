@@ -279,7 +279,7 @@ class ModelInfo:
 
 # --------------------------------------------------------------------------- parsing
 
-# The wire name /v1/systemone gives the truth type. Its answers read as TruthAnswer.
+# The API's older wire name for the truth type, still accepted for a question sent raw. Its answers read as TruthAnswer.
 LEGACY_TRUTH = "noul"
 
 

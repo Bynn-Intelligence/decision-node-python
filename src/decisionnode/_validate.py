@@ -47,7 +47,6 @@ MAX_CUSTOM_ID_CHARS = 512
 DECIDE_TYPES = ("truth", LEGACY_TRUTH, "choice", "score", "number", "point", "box")
 PLACE_TYPES = ("point", "box")
 UNITS = ("pixels", "normalized")
-SYSTEMONE_TYPES = (LEGACY_TRUTH, "choice", "score")
 Entry = Tuple[Dict[str, Any], Optional[str]]
 Limits = Mapping[str, Any]
 _DEFAULTS = {"min": Decimal(0), "max": Decimal(255), "step": Decimal(1)}
@@ -340,10 +339,10 @@ def _raise_422(entries: List[Entry]) -> None:
     raise ValidationError("", entries=[e for e, _ in entries], reason=_ascii(reason))
 
 
-def _score_levels(criteria: Any, systemone: bool) -> Optional[Sequence[Any]]:
+def _score_levels(criteria: Any) -> Optional[Sequence[Any]]:
     if isinstance(criteria, (list, tuple)):
         return criteria
-    if isinstance(criteria, Mapping) and not systemone:
+    if isinstance(criteria, Mapping):
         keys = list(criteria)
         if all(isinstance(k, str) for k in keys) and sorted(keys, key=lambda k: (len(k), k)) == [
             str(i) for i in range(len(keys))
@@ -405,7 +404,6 @@ def _check_question(
     q: Any,
     entries: List[Entry],
     deferred: List[BadRequestError],
-    systemone: bool,
     limits: Limits,
     image_ids: Optional[Sequence[Any]] = None,
 ) -> None:
@@ -417,13 +415,9 @@ def _check_question(
         entries.append((_entry("missing", base + ["type"], "Field required", dict(q)), None))
         return
     kind = q["type"]
-    if kind not in (SYSTEMONE_TYPES if systemone else DECIDE_TYPES):
-        # An unknown type is the API's 400 "Invalid request."; on /v1/systemone a number
-        # question is unknown from the start, its fields never read.
-        if systemone and kind == "number":
-            why = "question '%s': the number type is not available on /v1/systemone; send it to /v1/decide" % qid
-        else:
-            why = "question '%s': unknown type %s" % (qid, _compact(kind))
+    if kind not in DECIDE_TYPES:
+        # An unknown type is the API's 400 "Invalid request.", its fields never read.
+        why = "question '%s': unknown type %s" % (qid, _compact(kind))
         deferred.append(usage_error("Invalid request.", why))
         return
     loc = base + [kind]
@@ -478,7 +472,7 @@ def _check_question(
         if criteria is None:
             entries.append((_entry("missing", loc + ["criteria"], "Field required", dict(q)), None))
             return
-        levels = _score_levels(criteria, systemone)
+        levels = _score_levels(criteria)
         if levels is None:
             entries.append((_entry("list_type", loc + ["criteria"], "Input should be a valid list", criteria), None))
             return
@@ -528,7 +522,6 @@ def _check_question(
 
 def check_request(
     body: Mapping[str, Any],
-    systemone: bool = False,
     limits: Optional[Limits] = None,
     extra: Sequence[Entry] = (),
     image_ids: Optional[Sequence[Any]] = None,
@@ -548,7 +541,7 @@ def check_request(
     questions = body.get("questions")
     if isinstance(questions, Mapping):
         for qid, q in questions.items():
-            _check_question(qid, q, entries, deferred, systemone, held, image_ids)
+            _check_question(qid, q, entries, deferred, held, image_ids)
     entries.extend(tail)
     if entries:
         _raise_422(entries)
@@ -556,8 +549,8 @@ def check_request(
         raise deferred[0]
 
 
-def check_questions(questions: Mapping[str, Any], systemone: bool = False, limits: Optional[Limits] = None) -> None:
-    check_request({"questions": questions}, systemone, limits)
+def check_questions(questions: Mapping[str, Any], limits: Optional[Limits] = None) -> None:
+    check_request({"questions": questions}, limits)
 
 
 # --------------------------------------------------------------------------- images
@@ -769,7 +762,7 @@ def check_session_open(body: Mapping[str, Any], limits: Optional[Limits] = None)
                     None,
                 )
             )
-    check_request(body, False, held, entries)
+    check_request(body, held, entries)
     if sessions.get("enabled") is False:
         raise usage_error("Model %s does not serve sessions." % held.get("model"))
 

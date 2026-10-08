@@ -7,12 +7,12 @@ All notable changes to this package are listed here. The format follows
 ## [0.2.0] - Unreleased
 
 Implements version 1.2 of the SDK specification (`SPEC_VERSION` is `"1.2"`) and passes
-conformance suite 1.8.
+conformance suite 1.10.
 
 ### Added
 
 - Videos sent as frames: `Video(id, frames, fps, start, end)` and `VideoFrame(t, data,
-  media_type)`, taken by `decide`, `systemone`, `check`, `classify`, `score`, `number`,
+  media_type)`, taken by `decide`, `check`, `classify`, `score`, `number`,
   `gate`, `decide_many` requests, batch requests and `check_request` as `videos`. A frame's
   data is bytes (its type read from the first bytes) or base64 text with its media type.
   Frames always go inline.
@@ -29,6 +29,11 @@ conformance suite 1.8.
   `height`. A request with one needs an image, and `image` names one of the request's
   images (required with two or more); with `units` these are checked before anything is
   sent and raise `ValidationError` with the API's entries.
+
+### Removed
+
+- `systemone()`. `POST /v1/systemone` is not part of the API; every decision is sent to
+  `POST /v1/decide`.
 
 ### Changed
 

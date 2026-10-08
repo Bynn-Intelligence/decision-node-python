@@ -139,9 +139,6 @@ def test_local_checks(mode: str) -> None:
     with pytest.raises(dn.BadRequestError) as info:
         h.call("decide", questions={"pick": {"type": "point"}}, images=[BELT])
     assert (info.value.message, info.value.error_type) == ("Point question must have instructions: pick", None)
-    with pytest.raises(dn.BadRequestError) as info:
-        h.call("systemone", "s", {"damage": dn.box(DAMAGE)}, [BELT])
-    assert info.value.message == "Invalid request."
     assert h.recorder.requests == []
     # one image and no image field, or two images each named: clean
     h.client.check_request("decide", questions={"pick": dn.point(PICK)}, images=[BELT])

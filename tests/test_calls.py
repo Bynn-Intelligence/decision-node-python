@@ -1,5 +1,5 @@
 """The calls of spec 1.1 against an in-process transport, for both the sync and the async client:
-uploads, systemone, number, sessions' values and the Batch API."""
+uploads, number, sessions' values and the Batch API."""
 
 from __future__ import annotations
 
@@ -188,17 +188,17 @@ class TestUploads:
 
 
 class TestCalls:
-    def test_systemone_writes_truth_under_its_wire_name(self, mode: str) -> None:
+    def test_no_systemone(self, mode: str) -> None:
+        # The SDK has one decision call, POST /v1/decide; an answer under the older wire
+        # name of the truth type still reads as a TruthAnswer.
         h = Harness(mode, lambda r: json_response(200, decision_body({"t": {"type": "noul", "noul": 0.7}})))
-        d = h.call("systemone", "s", {"t": dn.truth("?"), "c": dn.choice("?", ["a"])})
-        body = h.recorder.body()
-        assert h.paths() == ["POST /v1/systemone"]
-        assert body["questions"] == {
-            "t": {"type": "noul", "instructions": "?"},
-            "c": {"type": "choice", "instructions": "?", "criteria": {"a": None}},
-        }
-        assert body["model"] == "decisionnode-latest"
+        assert not hasattr(h.client, "systemone")
+        d = h.call("decide", "s", {"t": dn.truth("?")})
+        assert h.paths() == ["POST /v1/decide"]
+        assert h.recorder.body()["questions"] == {"t": {"type": "truth", "instructions": "?"}}
         assert isinstance(d["t"], dn.TruthAnswer) and d["t"].truth == 0.7
+        with pytest.raises(ValueError):
+            h.client.check_request("systemone", state="s", questions={"t": dn.truth("?")})
 
     def test_number_helper(self, mode: str) -> None:
         answer = {"type": "number", "number": 3.5, "expected": 3.42, "confidence": 0.6, "probabilities": {"3.5": 0.6}}
@@ -394,7 +394,6 @@ class TestChecks:
         h = Harness(mode, storage([]))
         q = {"q": dn.truth("?")}
         assert h.client.check_request("decide", state="s", questions=q, images=[dn.Image("a", data=BIG)]) is None
-        assert h.client.check_request("systemone", state="s", questions=q) is None
         assert h.client.check_request("open_session", questions=q, window=64, ttl_seconds=3600) is None
         assert h.client.check_request("batches.create", requests=[{"custom_id": "a", "questions": q}]) is None
         assert (
@@ -407,8 +406,6 @@ class TestChecks:
         with pytest.raises(dn.ValidationError) as info:
             h.client.check_request("decide", state="s", questions={"n": dn.number("?", min=2, max=1)})
         assert info.value.entries[0]["type"] == "less_than_equal"  # type: ignore[index]
-        with pytest.raises(dn.BadRequestError, match="Invalid request."):
-            h.client.check_request("systemone", questions={"n": dn.number("?")})
         with pytest.raises(dn.ValidationError):
             h.client.check_request("open_session", questions={"a": dn.truth("?")}, window=65)
         with pytest.raises(dn.BadRequestError, match="The call holds no requests."):
