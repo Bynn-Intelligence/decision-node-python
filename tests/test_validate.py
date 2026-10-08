@@ -216,11 +216,24 @@ class TestQuestions:
 
 class TestImages:
     def test_count(self) -> None:
-        check_images([dn.Image("i%d" % i, data=PNG) for i in range(16)])
-        with pytest.raises(dn.BadRequestError) as info:
-            check_images([dn.Image("i%d" % i, url="https://x.example/%d.png" % i) for i in range(17)])
-        assert info.value.message == "Too many images: 17, the limit is 16."
-        assert info.value.error_type == "api_usage_error"
+        from decisionnode._validate import count_entries
+
+        assert count_entries([dn.Image("i%d" % i, data=PNG) for i in range(16)], []) == []
+        urls = [dn.Image("i%d" % i, url="https://x.example/%d.png" % i) for i in range(17)]
+        ((entry, _),) = count_entries(urls, [])
+        assert entry == {
+            "type": "too_long",
+            "loc": ["body", "images"],
+            "msg": "List should have at most 16 items after validation, not 17",
+            "input": [{"id": "i%d" % i, "url": "https://x.example/%d.png" % i} for i in range(17)],
+            "ctx": {"field_type": "List", "max_length": 16, "actual_length": 17},
+        }
+        # a local image is listed without its bytes; a held lower limit applies
+        ((entry, _),) = count_entries(
+            [dn.Image("a", data=PNG), dn.Image("b", data=PNG)], [], {"images": {"max_images": 1}}
+        )
+        assert entry["input"] == [{"id": "a", "media_type": "image/png"}, {"id": "b", "media_type": "image/png"}]
+        assert entry["ctx"]["max_length"] == 1
 
     def test_ids(self) -> None:
         with pytest.raises(dn.BadRequestError, match="Duplicate image id: a"):

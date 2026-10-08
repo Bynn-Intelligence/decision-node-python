@@ -143,7 +143,6 @@ def test_decision_reads_video_usage_and_warnings(mode: str) -> None:
 @pytest.mark.parametrize(
     "videos, images, message",
     [
-        ([dn.Video("v%d" % i, frames(0)) for i in range(5)], [], "Too many videos: 5, the limit is 4."),
         ([dn.Video("", frames(0))], [], "Video 0 needs an id."),
         (
             [dn.Video("cam", frames(0)), dn.Video("cam", frames(0))],
@@ -190,6 +189,20 @@ def test_local_video_checks(mode: str, videos: Any, images: Any, message: str) -
         h.client.check_request("decide", state="s", questions=Q, images=images, videos=videos)
 
 
+def test_more_than_four_videos_is_the_422(mode: str) -> None:
+    h = Harness(mode, ok())
+    videos = [dn.Video("v%d" % i, frames(0)) for i in range(5)]
+    with pytest.raises(dn.ValidationError) as info:
+        h.call("decide", "s", {"q": {"type": "choice", "instructions": "?"}}, videos=videos)
+    assert [(e["type"], e["loc"]) for e in info.value.entries] == [
+        ("missing", ["body", "questions", "q", "choice", "criteria"]),
+        ("too_long", ["body", "videos"]),
+    ]
+    assert info.value.entries[1]["input"] == [v.to_dict() for v in videos]
+    assert info.value.entries[1]["ctx"] == {"field_type": "List", "max_length": 4, "actual_length": 5}
+    assert h.recorder.requests == []
+
+
 def test_frame_counts_and_bytes_are_the_servers(mode: str) -> None:
     # 200 frames and a frame whose bytes are not its declared type go to the server.
     h = Harness(mode, ok())
@@ -204,9 +217,15 @@ def test_sixteen_images(mode: str) -> None:
     images = [dn.Image("i%d" % i, data=PNG) for i in range(16)]
     h.call("decide", "s", Q, images)
     assert len(json.loads(h.recorder.requests[0].content)["images"]) == 16
-    with pytest.raises(dn.BadRequestError) as info:
+    with pytest.raises(dn.ValidationError) as info:
         h.call("decide", "s", Q, images + [dn.Image("x", url="https://e.com/x.jpg")])
-    assert info.value.message == "Too many images: 17, the limit is 16."
+    ((entry,),) = [info.value.entries]
+    assert (entry["type"], entry["loc"], entry["ctx"]["actual_length"]) == ("too_long", ["body", "images"], 17)
+    assert entry["input"][-1] == {"id": "x", "url": "https://e.com/x.jpg"}
+    assert len(h.recorder.requests) == 1
+    with pytest.raises(dn.BadRequestError) as refused:
+        h.call("upload", images + [dn.Image("y", data=PNG)])
+    assert (refused.value.message, refused.value.error_type) == ("files: 1 to 16 files, got 17.", "api_usage_error")
     assert len(h.recorder.requests) == 1
 
 

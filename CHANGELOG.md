@@ -16,10 +16,11 @@ conformance suite 1.8.
   `gate`, `decide_many` requests, batch requests and `check_request` as `videos`. A frame's
   data is bytes (its type read from the first bytes) or base64 text with its media type.
   Frames always go inline.
-- Before anything is sent: at most 4 videos, ids unique across images and videos, frame
-  times of at least 0 and strictly increasing, JPEG, PNG or WebP frames, `fps` above 0 and
-  at most 4, and `end` after `start`, each raising `BadRequestError` with the API's
-  message. VideoFrame limits are the API's.
+- Before anything is sent: ids unique across images and videos, frame times of at least 0
+  and strictly increasing, JPEG, PNG or WebP frames, `fps` above 0 and at most 4, and
+  `end` after `start`, each raising `BadRequestError` with the API's message. More than 4
+  videos raises the API's `ValidationError` (a `too_long` entry on the videos). Frame
+  counts are the API's.
 - `Decision.usage.video_frames`, `Decision.usage.video_seconds` (`None` when absent) and
   `Decision.warnings` (an empty list when absent).
 - The `point` and `box` question types: the `point(instructions, image, units)` and
@@ -31,9 +32,11 @@ conformance suite 1.8.
 
 ### Changed
 
-- A request holds up to 16 images (4 before); the 17th raises `BadRequestError` with
-  `Too many images: 17, the limit is 16.` before anything is sent. Up to 16 images are
-  uploaded through one presign.
+- A request holds up to 16 images (4 before); a 17th raises the API's `ValidationError`
+  before anything is sent: a `too_long` entry on the images, listed with the request's
+  other entries, a local image in its `input` without its bytes. Up to 16 images are
+  uploaded through one presign; `upload()` of more raises `BadRequestError`
+  (`files: 1 to 16 files, got 17.`) before anything is sent.
 
 ## [0.1.0] - Unreleased
 

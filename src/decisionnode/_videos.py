@@ -14,11 +14,11 @@ import math
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Union
 
 from ._images import MEDIA_TYPES, Image, sniff_media_type
+from ._validate import MAX_VIDEOS
 from ._validate import usage_error as _usage_error
 
 __all__ = ["VideoFrame", "Video", "VideoInput", "video_list", "check_videos", "MAX_VIDEOS", "MAX_FPS"]
 
-MAX_VIDEOS = 4
 MAX_FPS = 4
 
 Number = Union[int, float]
@@ -153,8 +153,6 @@ def check_videos(videos: Sequence[Mapping[str, Any]], images: Sequence[Any] = ()
     words: the count, each id, each frame's time and media type, ``fps`` and the window."""
     if not videos:
         return
-    if len(videos) > MAX_VIDEOS:
-        raise _usage_error("Too many videos: %d, the limit is %d." % (len(videos), MAX_VIDEOS))
     seen: Set[str] = set()
     for img in images:
         iid = img.id if isinstance(img, Image) else img.get("id") if isinstance(img, Mapping) else None

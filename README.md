@@ -206,9 +206,11 @@ The other forms:
 
 Local images (a path or data) are checked before anything is sent, without decoding them:
 JPEG, PNG or WebP by their first bytes (a `media_type` you give must match them), at most
-10 MB each, at most 40 megapixels, read from the image's header. A request holds at most 16
-images, URLs included. A file that cannot be read raises `ValueError` when the `Image` is
-made; an image the API would refuse raises `BadRequestError` before any request.
+10 MB each, at most 40 megapixels, read from the image's header. A file that cannot be read
+raises `ValueError` when the `Image` is made; an image the API would refuse raises
+`BadRequestError` before any request. A request holds at most 16 images, URLs included; a
+17th raises `ValidationError` before any request, as the API answers it (a `too_long`
+entry on the images).
 
 How local images travel is chosen for speed:
 
@@ -235,7 +237,7 @@ upload_ids = dn.upload([Image("front", path="front.jpg"), Image("back", path="ba
 d = dn.decide(state="...", images=[Image("front", upload_id=upload_ids[0])], questions={...})
 ```
 
-`upload(images)` uploads whatever the size and returns one `upload_id` per image. An
+`upload(images)` uploads 1 to 16 images whatever their size and returns one `upload_id` per image. An
 upload can be used for one hour by any key of your workspace.
 
 ## Points and boxes
@@ -307,8 +309,9 @@ d.usage.video_frames, d.warnings
 | `Video(id, frames, fps=None, start=None, end=None)` | `id` unique across the request's images and videos. `fps` caps the frames read a second (above 0, at most 4; the API reads 2 by default). `start` and `end` set the window read, on the frames' own times; `end` is after `start`. Left out, the API's defaults apply |
 | `VideoFrame(t, data, media_type=None)` | `t` in seconds, at least 0, larger than the frame before it. `data` is JPEG, PNG or WebP bytes (the type is read from them) or base64 text with its `media_type` |
 
-A request holds at most 4 videos. The ids, times, media types, `fps` and the window are
-checked before anything is sent, and a fault raises `BadRequestError` as the API would. The
+The ids, times, media types, `fps` and the window are checked before anything is sent, and
+a fault raises `BadRequestError` as the API would. A request holds at most 4 videos; a fifth
+raises `ValidationError` (a `too_long` entry on the videos). The
 frame limits are the API's and are published with it. Frames always go inline: they are
 never uploaded or resized. `decide`, `systemone`, the helpers, `decide_many` and batch
 requests take `videos`; sessions do not.

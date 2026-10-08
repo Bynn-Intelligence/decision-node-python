@@ -31,6 +31,8 @@ __all__ = [
 ]
 
 MAX_IMAGES = 16
+MAX_VIDEOS = 4
+MAX_UPLOAD_FILES = 16
 MAX_CHOICE_OPTIONS = 255
 MAX_SCORE_LEVELS = 10
 MAX_GRID_VALUES = 4096
@@ -530,10 +532,12 @@ def check_request(
     limits: Optional[Limits] = None,
     extra: Sequence[Entry] = (),
     image_ids: Optional[Sequence[Any]] = None,
+    tail: Sequence[Entry] = (),
 ) -> None:
     """Raise what the API would answer for this body's fixed rules, in the API's order:
     the nesting limit, every 422 entry, then the first 400 in question order.
-    ``image_ids`` are the request's image ids, for the point and box rules."""
+    ``image_ids`` are the request's image ids, for the point and box rules; ``tail`` are
+    422 entries listed after the questions' (the image and video counts)."""
     check_nesting(body)
     held: Limits = limits or {}
     entries: List[Entry] = list(extra)
@@ -545,6 +549,7 @@ def check_request(
     if isinstance(questions, Mapping):
         for qid, q in questions.items():
             _check_question(qid, q, entries, deferred, systemone, held, image_ids)
+    entries.extend(tail)
     if entries:
         _raise_422(entries)
     if deferred:
@@ -631,19 +636,51 @@ def check_url(image_id: str, url: Any) -> None:
         raise BadRequestError(message, error_type="image_url_refused", reason=_ascii(message))
 
 
-def check_images(images: Sequence[Any], limits: Optional[Limits] = None) -> None:
-    """Raise what the API would answer for these images: their count, ids, URLs, the
-    media type of an upload reference, and for local bytes the format, size and pixels."""
+def max_images(limits: Optional[Limits] = None) -> int:
+    """The image limit: the held ``/v1/models`` entry's ``max_images``, else its
+    ``images.max_images``, else 16."""
     held: Limits = limits or {}
     published = held.get("images")
     nested: Mapping[str, Any] = published if isinstance(published, Mapping) else {}
-    most = held.get("max_images") or nested.get("max_images") or MAX_IMAGES
+    return int(held.get("max_images") or nested.get("max_images") or MAX_IMAGES)
+
+
+def image_input(img: Any) -> Any:
+    """An image as a 422 entry's ``input`` lists it: its wire form, a local image's bytes
+    left out (nothing is encoded to build an error)."""
+    if not isinstance(img, Image):
+        return dict(img) if isinstance(img, Mapping) else img
+    if img.url is not None:
+        return {"id": img.id, "url": img.url}
+    out: Dict[str, Any] = {"id": img.id}
+    if img.upload_id is not None:
+        out["upload_id"] = img.upload_id
+    if img.media_type is not None:
+        out["media_type"] = img.media_type
+    return out
+
+
+def count_entries(images: Sequence[Any], videos: Sequence[Any], limits: Optional[Limits] = None) -> List[Entry]:
+    """More images or videos than a request takes: the API's 422 ``too_long`` on
+    ``["body", "images"]`` or ``["body", "videos"]``. ``videos`` are in wire form."""
+    out: List[Entry] = []
+    for name, given, most in (
+        ("images", [image_input(i) for i in images], max_images(limits)),
+        ("videos", list(videos), MAX_VIDEOS),
+    ):
+        if len(given) > most:
+            msg = "List should have at most %d items after validation, not %d" % (most, len(given))
+            ctx = {"field_type": "List", "max_length": most, "actual_length": len(given)}
+            out.append((_entry("too_long", ["body", name], msg, given, ctx), None))
+    return out
+
+
+def check_images(images: Sequence[Any], limits: Optional[Limits] = None) -> None:
+    """Raise what the API would answer for these images: their ids, URLs, the media type
+    of an upload reference, and for local bytes the format, size and pixels. Their count
+    is a 422 entry of the request (``count_entries``)."""
+    held: Limits = limits or {}
     biggest = held.get("max_image_bytes") or MAX_IMAGE_BYTES
-    if len(images) > most:
-        raise usage_error(
-            "Too many images: %d, the limit is %d." % (len(images), most),
-            "%d images, the limit is %d" % (len(images), most),
-        )
     seen: Set[str] = set()
     for i, img in enumerate(images):
         if isinstance(img, Image):

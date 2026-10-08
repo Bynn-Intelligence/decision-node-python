@@ -86,7 +86,17 @@ from ._uploads import (
     storage_error,
     stripe,
 )
-from ._validate import check_frame, check_images, check_lines, check_list_query, check_request, check_session_open
+from ._validate import (
+    MAX_UPLOAD_FILES,
+    check_frame,
+    check_images,
+    check_lines,
+    check_list_query,
+    check_request,
+    check_session_open,
+    count_entries,
+    usage_error,
+)
 from ._videos import VideoInput, check_videos, video_list
 
 __all__ = ["DecisionNode", "AsyncDecisionNode", "DecideRequest", "DecisionResult", "BatchRequest"]
@@ -437,7 +447,7 @@ class _Common:
             state, qs, [{"id": ""} for _ in imgs], model, self._settings.model, [{"id": ""} for _ in vids]
         )
         limits = self._limits(probe["model"])
-        check_request(probe, systemone, limits, image_ids=_image_ids(imgs))
+        check_request(probe, systemone, limits, image_ids=_image_ids(imgs), tail=count_entries(imgs, vids, limits))
         check_images(imgs, limits)
         check_videos(vids, imgs)
         if encode:
@@ -559,7 +569,7 @@ class _Common:
             if vids:
                 probe["videos"] = [{"id": ""} for _ in vids]
             limits = self._limits(model)
-            check_request(probe, False, limits, image_ids=_image_ids(imgs))
+            check_request(probe, False, limits, image_ids=_image_ids(imgs), tail=count_entries(imgs, vids, limits))
             check_images(imgs, limits)
             check_videos(vids, imgs)
             checked.append((req, qs, imgs, vids))
@@ -567,6 +577,15 @@ class _Common:
 
     def __repr__(self) -> str:
         return "%s(%r)" % (self.__class__.__name__, self._settings)
+
+
+def _upload_list(images: Any) -> List[Any]:
+    """The images of ``upload``: one presign takes 1 to 16 files, so more is that call's
+    own 400, raised before anything is sent."""
+    imgs = _base.image_list(images)
+    if len(imgs) > MAX_UPLOAD_FILES:
+        raise usage_error("files: 1 to %d files, got %d." % (MAX_UPLOAD_FILES, len(imgs)))
+    return imgs
 
 
 def _image_ids(images: Sequence[Any]) -> List[Any]:
@@ -1121,7 +1140,7 @@ class DecisionNode(_Common):
         """Upload local images whatever their size and return the ``upload_id`` of each,
         in order: one presign for the images not uploaded before, then a PUT each. An
         upload id can be sent as ``Image(id, upload_id=...)`` for the next hour."""
-        imgs = _base.image_list(images)
+        imgs = _upload_list(images)
         check_images(imgs, self._limits())
         local = []
         for img in imgs:
@@ -1745,7 +1764,7 @@ class AsyncDecisionNode(_Common):
     async def upload(self, images: Sequence[ImageInput]) -> List[str]:
         """Upload local images whatever their size and return the ``upload_id`` of each.
         See :meth:`DecisionNode.upload`."""
-        imgs = _base.image_list(images)
+        imgs = _upload_list(images)
         check_images(imgs, self._limits())
         local = []
         for img in imgs:
