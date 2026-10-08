@@ -6,10 +6,33 @@ All notable changes to this package are listed here. The format follows
 
 ## [0.1.0] - Unreleased
 
-First version. Implements version 1.0 of the specification shared by every official
-DecisionNode SDK, exported as `SPEC_VERSION`.
+First version. Implements version 1.1 of the specification shared by every official
+DecisionNode SDK, exported as `SPEC_VERSION`, and passes conformance suite 1.4.
 
 ### Added
+
+- The `number` question type: the `number` builder, the `number` helper and
+  `NumberAnswer` (`number`, `expected`, `confidence`, `probabilities` keyed by the value as
+  the API writes it).
+- `systemone` for `POST /v1/systemone`, the strict path.
+- Truth answers read as `TruthAnswer` under either wire name the API uses for the type.
+- Images by `upload_id`, and `upload(images)`. Local images whose bytes total
+  `DEFAULT_INLINE_THRESHOLD` (512 KiB) or more in a request are uploaded first (one
+  presign, parallel `PUT`s with exactly the signed headers) and sent by `upload_id`;
+  smaller ones go inline. The client option `inline_threshold` changes the threshold.
+  Uploads are remembered by the SHA-256 of their bytes and reused until 5 minutes before
+  they expire; a stale one is uploaded again and the request sent once more.
+- Local checks before any request, raising the API's own error class and message: image
+  format by magic bytes, size, pixel dimensions read from the JPEG, PNG and WebP headers,
+  image count and ids, `https` URLs of at most 2,048 characters, choice options, score
+  levels, truth text, and the number grid with the API's 422 entries.
+- Sessions: `open_session`, `Session` and `AsyncSession` (`connect`, `send`, `replies`,
+  `next_event`, `end`, `close`), `Reply`, `FrameError`, `SessionClosed`, and `supervise`.
+  `SessionLimitError`, a `RateLimitError`, for a key at its open-session limit.
+- The Batch API: `batches.create`, `add`, `finalize`, `get`, `list`, `results` and
+  `cancel`, and `run_batch`; `Batch`, `BatchPage`, `BatchResult` and `BatchRun`.
+- Connections kept open between calls (up to 100, 30 seconds idle), and an `http2`
+  option with the `http2` extra.
 
 - `DecisionNode` and `AsyncDecisionNode` clients with `decide`, `decide_many`, `check`,
   `classify`, `score`, `gate`, `models` and `decide_raw`. `check`, `classify`, `score`
@@ -20,9 +43,9 @@ DecisionNode SDK, exported as `SPEC_VERSION`.
 - Question builders `truth`, `choice` and `score`; wire-form mappings are accepted too.
 - Typed answers: `TruthAnswer`, `ChoiceAnswer`, `ScoreAnswer`, and `UnknownAnswer` for
   answer types this version does not know.
-- Images from a file path, bytes or an `https` URL. The media type of a file, and of
-  bytes given without one, is read from the first bytes (JPEG, PNG or WebP); another
-  format, or a file that cannot be read, raises `ValueError` when the `Image` is made.
+- Images from a file path, bytes (or base64 text) or an `https` URL. The media type of a
+  file, and of bytes given without one, is read from the first bytes (JPEG, PNG or WebP);
+  a file that cannot be read raises `ValueError` when the `Image` is made.
 - An answer of a known type with a missing or wrongly typed field comes back as
   `UnknownAnswer` with its raw fields; the rest of the decision parses as usual.
 - Retries on 408, 429, 5xx, timeouts and connection errors, honouring `retry-after-ms`
@@ -36,7 +59,7 @@ DecisionNode SDK, exported as `SPEC_VERSION`.
   not JSON raises `ServerError`. `str(error)` is the server's message, `""` when it
   sent none.
 - Argument problems found before sending (an empty question map, a value that cannot be
-  sent as JSON, an unusable image, a bad `base_url`, `timeout` or `max_retries`) raise
+  sent as JSON, an unreadable file, a bad `base_url`, `timeout` or `max_retries`) raise
   Python's own `ValueError`, never a `DecisionNodeError`. `decide_many` checks every
   request before sending any.
 - Redirects are never followed, also on an `http_client` passed in that is set to
@@ -59,4 +82,4 @@ DecisionNode SDK, exported as `SPEC_VERSION`.
 - `DecisionNodeError` is exported by that name and is the base of every exception.
 - CI pins every action to a commit SHA, sets `persist-credentials: false` on every
   checkout, installs a pinned uv and checks out the conformance suite at a pinned
-  commit (suite 1.3).
+  commit (suite 1.4).
