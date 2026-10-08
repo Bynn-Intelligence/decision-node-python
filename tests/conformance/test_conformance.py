@@ -322,6 +322,21 @@ def check_error(spec: Dict[str, Any], err: Any, path: str) -> None:
     match(spec.get("fields", {}), norm_error(err), path + ".fields")
 
 
+def check_results_spec(spec: Dict[str, Any], results: Any, path: str) -> None:
+    """batch_results whole, or count with batch_results_sample by index."""
+    results = list(results)
+    if "batch_results" in spec:
+        check_batch_results(spec["batch_results"], results, path + ".batch_results")
+    if "count" in spec and len(results) != spec["count"]:
+        raise Fail("%s: expected %d results, got %d" % (path, spec["count"], len(results)))
+    for sample in spec.get("batch_results_sample", []):
+        i = sample["index"]
+        if i >= len(results):
+            raise Fail("%s: no result %d of %d" % (path, i, len(results)))
+        rest = {k: v for k, v in sample.items() if k != "index"}
+        check_batch_results([rest], [results[i]], "%s.batch_results[%d]" % (path, i))
+
+
 def check_batch_results(expected: List[Dict[str, Any]], results: Any, path: str) -> None:
     results = list(results)
     if len(results) != len(expected):
@@ -369,6 +384,9 @@ def decode(value: Any, ctx: Dict[str, Any]) -> Any:
             return resolve_ref(args, ctx)
         if key == "$text":
             return args["repeat"] * args["times"]
+        if key == "$list":
+            # count copies of item, with {i} in its strings replaced by the 0-based index.
+            return [decode(with_index(args["item"], i), ctx) for i in range(args["count"])]
         if key == "$nest":
             # The value inside depth arrays: [[[...value...]]].
             out = decode(args["value"], ctx)
@@ -398,6 +416,16 @@ def decode(value: Any, ctx: Dict[str, Any]) -> Any:
         return {k: decode(v, ctx) for k, v in value.items()}
     if isinstance(value, list):
         return [decode(v, ctx) for v in value]
+    return value
+
+
+def with_index(value: Any, i: int) -> Any:
+    if isinstance(value, str):
+        return value.replace("{i}", str(i))
+    if isinstance(value, dict):
+        return {k: with_index(v, i) for k, v in value.items()}
+    if isinstance(value, list):
+        return [with_index(v, i) for v in value]
     return value
 
 
@@ -433,6 +461,13 @@ async def invoke(client: Any, mode: str, call: Dict[str, Any], ctx: Dict[str, An
         a["if_true"] = a.pop("true")
     if "false" in a:
         a["if_false"] = a.pop("false")
+    if call.get("check"):
+        # The same request handed to the SDK's check instead of being sent. A check makes
+        # no request, so it is not a coroutine on the async client either.
+        a.pop("batch_id", None)
+        result = client.check_request(method, **a)
+        assert not inspect.isawaitable(result), "check_request must not be a coroutine"
+        return result
     if method.startswith("batches."):
         result = await settle(getattr(client.batches, method.split(".", 1)[1])(**a))
         if method == "batches.results":
@@ -474,7 +509,7 @@ def make_client(
         env.setenv(var, val.replace("{mock_url}", mock_url))
     spec = dict(case.get("client") or {})
     kwargs: Dict[str, Any] = {}
-    for k in ("api_key", "model", "timeout", "max_retries", "inline_threshold"):
+    for k in ("api_key", "model", "timeout", "max_retries", "inline_threshold", "upload_timeout"):
         if spec.get(k) is not None:
             kwargs[k] = spec[k]
     if "base_url" in spec:
@@ -550,13 +585,15 @@ def check_outcome(spec: Dict[str, Any], result: Any, path: str) -> None:
             raise Fail("%s: expected a BatchPage, got %r" % (path, result))
         match(spec.get("batch_page", {}), result.raw, path + ".batch_page")
     elif kind == "batch_results":
-        check_batch_results(spec["batch_results"], result, path + ".batch_results")
+        check_results_spec(spec, result, path)
     elif kind == "batch_run":
         if not isinstance(result, dn.BatchRun):
             raise Fail("%s: expected a BatchRun, got %r" % (path, result))
         match(spec.get("batch", {}), result.batch.raw, path + ".batch")
-        if "batch_results" in spec:
-            check_batch_results(spec["batch_results"], result.results, path + ".batch_results")
+        check_results_spec(spec, result.results, path)
+    elif kind == "checked":
+        if result is not None:
+            raise Fail("%s: check returned %r; a request that passes every check returns nothing" % (path, result))
     elif kind == "session":
         match(spec.get("session", {}), norm_session(result), path + ".session")
     elif kind == "upload_ids":
@@ -883,15 +920,19 @@ async def run_steps(
         elif "send" in step:
             args = dict(step["send"])
             name = args.pop("session")
+            session_obj = ctx[name]
+            act = session_obj.check_frame if step.get("check") else session_obj.send
             try:
-                await settle(ctx[name].send(**{k: decode(v, ctx) for k, v in args.items()}))
+                result = await settle(act(**{k: decode(v, ctx) for k, v in args.items()}))
             except (dn.DecisionNodeError, ValueError) as err:
                 # A frame that breaks a fixed rule is refused locally and nothing is sent.
                 if "outcome" not in step:
                     raise
                 check_outcome(step["outcome"], err, where + ".outcome")
             else:
-                if "outcome" in step:
+                if step.get("check") and "outcome" in step:
+                    check_outcome(step["outcome"], result, where + ".outcome")
+                elif "outcome" in step:
                     raise Fail("%s: expected the frame to be refused, it was sent" % where)
         elif "read" in step:
             spec = step["read"]
