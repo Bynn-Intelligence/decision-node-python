@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Dict, Iterator, List, Mapping, NamedTuple, Optional, Sequence, Set, Union
+from typing import Any, AsyncIterator, Dict, Iterator, List, Mapping, NamedTuple, Optional, Sequence, Union
 
 import httpx
 
 from . import _base
-from ._errors import BadRequestError, ConnectionError, DecisionNodeError, ServerError, TimeoutError
+from ._errors import ConnectionError, DecisionNodeError, ServerError, TimeoutError
 from ._types import Decision, parse_decision
 
 __all__ = [
@@ -191,31 +191,6 @@ def parse_result_line(text: str) -> BatchResult:
 
 
 # --------------------------------------------------------------------------- the lines
-
-
-def check_line(index: int, req: Any, seen: Set[str]) -> Mapping[str, Any]:
-    """The request of line ``index`` (1-based), with its ``custom_id`` checked as the API
-    checks it."""
-    if not isinstance(req, Mapping):
-        raise ValueError("batch request %d is not a mapping of custom_id, state, questions, images and model" % index)
-    if "custom_id" not in req:
-        raise BadRequestError(
-            "Line %d has no custom_id." % index,
-            error_type="api_usage_error",
-            reason="Line %d has no custom_id." % index,
-        )
-    cid = req["custom_id"]
-    if not isinstance(cid, str) or not 1 <= len(cid) <= MAX_CUSTOM_ID_CHARS:
-        message = "Line %d: custom_id must be a string of 1 to %d characters." % (index, MAX_CUSTOM_ID_CHARS)
-        raise BadRequestError(message, error_type="api_usage_error", reason=message)
-    if cid in seen:
-        shown = json.dumps(cid, ensure_ascii=False)
-        if len(shown) > 64:
-            shown = shown[:64] + "..."
-        message = "Line %d: custom_id %s is already in the batch." % (index, shown)
-        raise BadRequestError(message, error_type="api_usage_error", reason=message)
-    seen.add(cid)
-    return req
 
 
 def line_bytes(

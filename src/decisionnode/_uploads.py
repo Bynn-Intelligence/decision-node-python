@@ -122,7 +122,12 @@ def _inline(img: Image, strip_id: bool) -> Dict[str, Any]:
 
 
 def plan_images(
-    images: Sequence[Any], cache: UploadCache, threshold: int, always_upload: bool = False, strip_id: bool = False
+    images: Sequence[Any],
+    cache: UploadCache,
+    threshold: int,
+    always_upload: bool = False,
+    strip_id: bool = False,
+    now: Optional[float] = None,
 ) -> ImagePlan:
     """Plan the images, already checked: URLs, upload ids and wire-form mappings as given;
     a local image with a live cache entry by its ``upload_id``; the other local images
@@ -142,7 +147,7 @@ def plan_images(
                 wire.pop("id", None)
             plan.wires.append(wire)
             continue
-        hit = cache.get(cache_key(img)) if len(cache) else None
+        hit = cache.get(cache_key(img), now) if len(cache) else None
         if hit is not None:
             plan.wires.append(plan.by_upload(img, hit))
             continue

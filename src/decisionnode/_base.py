@@ -221,15 +221,9 @@ def check_question_map(questions: Any) -> Dict[str, Any]:
         raise ValueError("questions must be a mapping of question id to question")
     if len(questions) == 0:
         raise ValueError("questions must hold at least one question")
-    out: Dict[str, Any] = {}
-    for qid, q in questions.items():
-        if not isinstance(q, Mapping):
-            raise ValueError(
-                "question %r must be a question built with truth(), choice(), score() or number(), or a mapping"
-                % (qid,)
-            )
-        out[str(qid)] = q
-    return out
+    # Each question is checked as the API checks it (a question that is not an object is
+    # its 422), so it passes through as given here.
+    return {str(qid): q for qid, q in questions.items()}
 
 
 def image_list(images: Any) -> List[Any]:

@@ -8,7 +8,15 @@ from typing import Any, Dict
 import pytest
 
 import decisionnode as dn
-from decisionnode._validate import check_images, check_questions
+from decisionnode._validate import (
+    check_frame,
+    check_images,
+    check_lines,
+    check_list_query,
+    check_questions,
+    check_request,
+    check_session_open,
+)
 
 PNG = (Path(__file__).parent / "fixtures" / "rgb-3x5.png").read_bytes()
 
@@ -30,9 +38,14 @@ class TestQuestions:
                 "c": dn.choice("?", ["a"]),
                 "s": dn.score("?", ["low"]),
                 "n": dn.number("?", min=0, max=4095),
-                "r": {"type": "rank", "instructions": "a type the server judges"},
+                "w": {"type": "score", "criteria": {"0": "low", "1": "high"}},
             }
         )
+
+    def test_unknown_type(self) -> None:
+        err = refused({"r": {"type": "rank", "instructions": "?"}})
+        assert type(err) is dn.BadRequestError
+        assert (err.message, err.error_type) == ("Invalid request.", "api_usage_error")
 
     def test_choice_limits(self) -> None:
         err = refused({"q": dn.choice("?", [])})
@@ -61,7 +74,7 @@ class TestQuestions:
         assert type(err) is dn.BadRequestError
         assert err.message == "Too many score levels. Must have at most 10 levels."
         # Levels keyed "0".."K-1" count the same.
-        err = refused({"q": {"type": "score", "criteria": {str(i): i for i in range(11)}}})
+        err = refused({"q": {"type": "score", "criteria": {str(i): "l%d" % i for i in range(11)}}})
         assert err.message == "Too many score levels. Must have at most 10 levels."
 
     def test_truth_needs_text(self) -> None:
@@ -70,9 +83,33 @@ class TestQuestions:
         check_questions({"q": dn.truth(if_true="yes")})
         check_questions({"q": {"type": "noul", "instructions": "?"}})
 
-    def test_missing_fields_are_the_servers(self) -> None:
-        # The API answers these with its 422 list, which only it writes.
-        check_questions({"q": {"type": "score", "instructions": "?"}, "c": {"type": "choice"}})
+    def test_shape_faults_are_the_apis_422_entries(self) -> None:
+        err = refused({"q": {"type": "score", "instructions": "?"}, "c": {"type": "choice"}, "x": "not a question"})
+        assert type(err) is dn.ValidationError and err.error_type is None
+        assert err.entries == [
+            {
+                "type": "missing",
+                "loc": ["body", "questions", "q", "score", "criteria"],
+                "msg": "Field required",
+                "input": {"type": "score", "instructions": "?"},
+            },
+            {
+                "type": "missing",
+                "loc": ["body", "questions", "c", "choice", "criteria"],
+                "msg": "Field required",
+                "input": {"type": "choice"},
+            },
+            {
+                "type": "model_type",
+                "loc": ["body", "questions", "x"],
+                "msg": "Input should be a valid dictionary or object",
+                "input": "not a question",
+            },
+        ]
+        err = refused({"q": {"instructions": "?"}})
+        assert err.entries[0]["type"] == "missing"  # type: ignore[index]
+        err = refused({"q": dn.truth(7)})
+        assert [e["type"] for e in err.entries or []] == ["string_type", "dict_type", "list_type"]
 
     def test_number_min_above_max(self) -> None:
         err = refused({"cars": dn.number("How many cars?", min=60, max=50)})
@@ -158,8 +195,23 @@ class TestQuestions:
         assert len(err.entries or []) == 2
         assert err.reason == "question 'b': min 2 is above max 1 and 1 more"
 
-    def test_systemone_leaves_number_to_the_server(self) -> None:
-        check_questions({"n": dn.number(min=5, max=1)}, systemone=True)
+    def test_systemone_has_no_number_type(self) -> None:
+        err = refused({"n": dn.number(min=5, max=1)}, systemone=True)
+        assert (type(err), err.message, err.error_type) == (dn.BadRequestError, "Invalid request.", "api_usage_error")
+
+    def test_held_model_limits_replace_the_documented_bounds(self) -> None:
+        with pytest.raises(dn.BadRequestError, match="at most 2 choices"):
+            check_questions({"q": dn.choice("?", ["a", "b", "c"])}, limits={"max_choice_options": 2})
+        with pytest.raises(dn.BadRequestError, match="does not answer number questions"):
+            check_questions({"n": dn.number("?")}, limits={"number_max_grid_values": 0, "model": "m"})
+
+    def test_nesting_limit(self) -> None:
+        deep: Any = "x"
+        for _ in range(127):
+            deep = [deep]
+        check_request({"state": deep, "questions": {"q": dn.truth("?")}})  # 128 levels with the body
+        with pytest.raises(dn.BadRequestError, match="Invalid request."):
+            check_request({"state": [deep], "questions": {"q": dn.truth("?")}})
 
 
 class TestImages:
@@ -180,9 +232,20 @@ class TestImages:
         check_images([dn.Image("u", url="https://x.example/" + "a" * 2000)])
         with pytest.raises(dn.BadRequestError, match="only https URLs"):
             check_images([dn.Image("u", url="http://x.example/a.png")])
-        with pytest.raises(dn.BadRequestError, match="over 2048 characters") as info:
+        with pytest.raises(dn.BadRequestError, match="over the limit of 2048") as info:
             check_images([dn.Image("u", url="https://x.example/" + "a" * 2048)])
         assert info.value.error_type == "image_url_refused"
+        for url in (
+            "https://user:pw@x.example/a.png",
+            "https://x.example:8443/a.png",
+            "https://127.0.0.1/a.png",
+            "https://[::ffff:10.0.0.1]/a.png",
+            "https://169.254.169.254/latest",
+        ):
+            with pytest.raises(dn.BadRequestError) as info:
+                check_images([dn.Image("u", url=url)])
+            assert info.value.error_type == "image_url_refused", url
+        check_images([dn.Image("u", url="https://8.8.8.8/a.png"), dn.Image("v", url="https://x.example:443/a.png")])
 
     def test_bytes(self) -> None:
         with pytest.raises(dn.BadRequestError, match="is not a JPEG, PNG or WebP image") as info:
@@ -204,3 +267,59 @@ class TestImages:
         with pytest.raises(ValueError) as info:
             check_images([42])
         assert not isinstance(info.value, dn.DecisionNodeError)
+
+
+class TestSessionsAndBatches:
+    def test_session_open(self) -> None:
+        check_session_open({"window": 64, "ttl_seconds": 3600, "questions": {"a": dn.truth("?")}})
+        with pytest.raises(dn.ValidationError) as info:
+            check_session_open({"window": 65, "questions": {"a": dn.truth("?")}})
+        assert info.value.entries == [
+            {
+                "type": "less_than_equal",
+                "loc": ["body", "window"],
+                "msg": "Input should be less than or equal to 64",
+                "input": 65,
+                "ctx": {"le": 64},
+            }
+        ]
+        with pytest.raises(dn.ValidationError):
+            check_session_open({"ttl_seconds": 0, "questions": {"a": dn.truth("?")}})
+        with pytest.raises(dn.BadRequestError, match="does not serve sessions"):
+            check_session_open({"questions": {"a": dn.truth("?")}}, {"sessions": {"enabled": False}, "model": "m"})
+
+    def test_frames(self) -> None:
+        check_frame("a", None, ["abort"], None, 1, ["abort"])
+        for args, text in (
+            ((None, None, None, None, None), "needs a frame value or an image"),
+            (("", None, None, None, None), "not empty"),
+            (("a", None, [], None, None), "non-empty list"),
+            (("a", None, ["speed"], None, None), "unknown question id 'speed'"),
+            (("a", None, None, "yes", None), "true or false"),
+            (("a", None, None, None, -1), "seq: must be an integer"),
+            (("a", dn.Image("f", url="https://x.example/f.png"), None, None, None), "not a url"),
+        ):
+            with pytest.raises(dn.BadRequestError, match=text) as info:
+                check_frame(*args, known=["abort"])  # type: ignore[call-arg]
+            assert info.value.error_type == "api_usage_error"
+
+    def test_batch_lines(self) -> None:
+        check_lines([{"custom_id": "a"}, {"custom_id": "b"}], allow_empty=False)
+        for requests, text in (
+            ([], "The call holds no requests."),
+            ([{"questions": {}}], "Line 1 has no custom_id."),
+            ([{"custom_id": ""}], "Line 1: custom_id must be a string of 1 to 512 characters."),
+            ([{"custom_id": "a"}, {"custom_id": "a"}], 'Line 2: custom_id "a" is already in the batch.'),
+        ):
+            with pytest.raises(dn.BadRequestError) as info:
+                check_lines(requests, allow_empty=False)
+            assert info.value.message == text
+        with pytest.raises(dn.BadRequestError, match="The limit is 1"):
+            check_lines([{"custom_id": "a"}, {"custom_id": "b"}], True, {"batch": {"requests_per_batch": 1}})
+
+    def test_list_query(self) -> None:
+        check_list_query(0, 100)
+        with pytest.raises(dn.BadRequestError):
+            check_list_query(-1, None)
+        with pytest.raises(dn.BadRequestError):
+            check_list_query(None, 101)

@@ -19,7 +19,6 @@ from typing import (
     Mapping,
     Optional,
     Sequence,
-    Set,
     Tuple,
     Type,
     TypeVar,
@@ -38,7 +37,6 @@ from ._batches import (
     BatchPage,
     BatchResults,
     BatchRun,
-    check_line,
     check_poll,
     line_bytes,
     parse_batch,
@@ -60,7 +58,6 @@ from ._sessions import (
     Session,
     SessionClosed,
     asupervise,
-    check_frame_image,
     supervise,
 )
 from ._types import (
@@ -88,7 +85,7 @@ from ._uploads import (
     storage_error,
     stripe,
 )
-from ._validate import check_images, check_questions
+from ._validate import check_frame, check_images, check_lines, check_list_query, check_request, check_session_open
 
 __all__ = ["DecisionNode", "AsyncDecisionNode", "DecideRequest", "DecisionResult", "BatchRequest"]
 
@@ -245,6 +242,7 @@ def _batch_path(batch_id: Any, suffix: str = "") -> str:
 
 
 def _list_query(offset: Any, limit: Any) -> Dict[str, int]:
+    check_list_query(offset, limit)
     query: Dict[str, int] = {}
     for name, value in (("offset", offset), ("limit", limit)):
         if value is None:
@@ -256,17 +254,10 @@ def _list_query(offset: Any, limit: Any) -> Dict[str, int]:
 
 
 def _session_body(
-    state: Any,
-    questions: Any,
-    instructions: Any,
-    model: Optional[str],
-    window: Any,
-    ttl_seconds: Any,
-    default_model: str,
+    client: _Common, state: Any, questions: Any, instructions: Any, model: Optional[str], window: Any, ttl_seconds: Any
 ) -> bytes:
     qs = _base.check_question_map(questions)
-    check_questions(qs)
-    body: Dict[str, Any] = {"model": model or default_model}
+    body: Dict[str, Any] = {"model": model or client._settings.model}
     if instructions is not None:
         body["instructions"] = instructions
     if state is not UNSET and state is not None:
@@ -276,6 +267,7 @@ def _session_body(
         body["window"] = window
     if ttl_seconds is not None:
         body["ttl_seconds"] = ttl_seconds
+    check_session_open(body, client._limits(body["model"]))
     return _base.encode(body)
 
 
@@ -314,6 +306,38 @@ class _Common:
     _settings: Settings
     _cache: UploadCache
     _http: Any
+    # The time uploads, their URLs and cache entries are judged by. Tests replace it.
+    _clock: Callable[[], float]
+    # The models() entries by name, once models() has been called: the limits only
+    # /v1/models states are checked locally from then on.
+    _held: Dict[str, Dict[str, Any]]
+
+    def _limits(self, model: Optional[str] = None) -> Dict[str, Any]:
+        name = model or self._settings.model
+        entry = self._held.get(name)
+        return dict(entry, model=name) if entry else {}
+
+    def _hold(self, entries: Any) -> None:
+        self._held = {
+            m["name"]: dict(m) for m in entries or [] if isinstance(m, Mapping) and isinstance(m.get("name"), str)
+        }
+
+    def _plan(self, images: Sequence[Any], strip_id: bool = False) -> ImagePlan:
+        return plan_images(images, self._cache, self._settings.inline_threshold, strip_id=strip_id, now=self._clock())
+
+    def _check_frame(self, session: Any, frame: Any, image: Any, questions: Any, reset: Any, seq: Any) -> Any:
+        """A frame's fixed rules and its image's, before anything is sent. Returns the
+        questions as a list."""
+        if questions is not None:
+            if isinstance(questions, (str, bytes)) or not isinstance(questions, Iterable):
+                raise ValueError("questions must be a list of the session's question ids")
+            questions = list(questions)
+        known = session.raw.get("questions")
+        check_frame(frame, image, questions, reset, seq, known if isinstance(known, list) else None)
+        if image is not None:
+            probe = dict(image, id=image.get("id") or "frame") if isinstance(image, Mapping) else image
+            check_images([probe], self._limits(session.model))
+        return questions
 
     @property
     def api_key(self) -> Optional[str]:
@@ -349,12 +373,15 @@ class _Common:
         systemone = path == _base.SYSTEMONE_PATH
         qs = _base.check_question_map(questions)
         imgs = _base.image_list(images)
-        check_questions(qs, systemone)
-        check_images(imgs)
         if systemone:
             qs = _base.systemone_questions(qs)
         prep = _Prepared(path, state, qs, imgs, model)
-        plan = plan_images(imgs, self._cache, self._settings.inline_threshold)
+        # The body as it will be sent, its images as placeholders so the nesting counts them.
+        probe = _base.decide_body(state, qs, [{"id": ""} for _ in imgs], model, self._settings.model)
+        limits = self._limits(probe["model"])
+        check_request(probe, systemone, limits)
+        check_images(imgs, limits)
+        plan = self._plan(imgs)
         prep.plan = plan
         if plan.uploads:
             # Written once the uploads are done; written now without the images, so a
@@ -487,6 +514,8 @@ class DecisionNode(_Common):
         # The wait between attempts, PUT retries, batch polls and session reopens. Tests
         # replace it to record the waits without sleeping.
         self._sleep: Callable[[float], None] = time.sleep
+        self._clock = time.time
+        self._held = {}
         self.batches = Batches(self)
 
     # ---- lifecycle
@@ -626,7 +655,7 @@ class DecisionNode(_Common):
                 # A 412 on a retry: an earlier attempt stored the object, which is write-once.
                 if 200 <= status < 300 or (status == 412 and attempt > 0):
                     return
-                if status == 403 and may_presign and time.monotonic() - presigned_at >= url_ttl:
+                if status == 403 and may_presign and self._clock() - presigned_at >= url_ttl:
                     raise UrlExpired()
                 error = storage_error(img.id, status, resp_headers, response.text)
                 retry = 500 <= status <= 599
@@ -641,7 +670,7 @@ class DecisionNode(_Common):
         for entry in entries:
             check_storage_url(entry["url"])
         url_ttl = float(body.get("expires_in") or 300)
-        presigned_at = time.monotonic()
+        presigned_at = self._clock()
         out: Dict[CacheKey, str] = {}
         expired: List[Image] = []
         errors: List[BaseException] = []
@@ -684,7 +713,7 @@ class DecisionNode(_Common):
             out: Dict[CacheKey, str] = {}
             todo: List[Image] = []
             for img, key in zip(images, keys):
-                hit = self._cache.get(key)
+                hit = self._cache.get(key, self._clock())
                 if hit is not None:
                     out[key] = hit
                 elif key not in out and all(cache_key(t) != key for t in todo):
@@ -700,10 +729,7 @@ class DecisionNode(_Common):
         return plan.finish(self._upload(plan.uploads) if plan.uploads else {})
 
     def _frame_image(self, image: Any) -> Dict[str, Any]:
-        check_frame_image(image)
-        probe = dict(image, id=image.get("id") or "frame") if isinstance(image, Mapping) else image
-        check_images([probe])
-        plan = plan_images([image], self._cache, self._settings.inline_threshold, strip_id=True)
+        plan = self._plan([image], strip_id=True)
         return self._finish(plan)[0]
 
     # ---- decisions
@@ -722,7 +748,7 @@ class DecisionNode(_Common):
             except BadRequestError as exc:
                 if attempt == 0 and plan.placed and exc.error_type in _base.STALE_UPLOAD:
                     self._cache.drop(plan.placed)
-                    plan = plan_images(prep.images, self._cache, self._settings.inline_threshold)
+                    plan = self._plan(prep.images)
                     content = None
                     continue
                 raise
@@ -891,6 +917,7 @@ class DecisionNode(_Common):
         """The models this key may use, with the limits each one publishes."""
         _, _, body = self._json("GET", _base.MODELS_PATH, None)
         entries = body.get("models") if isinstance(body, Mapping) else None
+        self._hold(entries)
         return [parse_model(m) for m in entries or []]
 
     def upload(self, images: Sequence[ImageInput]) -> List[str]:
@@ -898,7 +925,7 @@ class DecisionNode(_Common):
         in order: one presign for the images not uploaded before, then a PUT each. An
         upload id can be sent as ``Image(id, upload_id=...)`` for the next hour."""
         imgs = _base.image_list(images)
-        check_images(imgs)
+        check_images(imgs, self._limits())
         local = []
         for img in imgs:
             if not isinstance(img, Image) or (img.data is None and img.upload_id is None):
@@ -934,7 +961,7 @@ class DecisionNode(_Common):
         Raises:
             SessionLimitError: the key holds as many open sessions as it may (never retried).
         """
-        content = _session_body(state, questions, instructions, model, window, ttl_seconds, self._settings.model)
+        content = _session_body(self, state, questions, instructions, model, window, ttl_seconds)
         _, headers, body = self._json("POST", _base.SESSIONS_PATH, content, policy=SESSION_OPEN)
         return Session(self, body if isinstance(body, dict) else {}, headers)
 
@@ -1004,23 +1031,28 @@ class Batches:
     def __init__(self, client: DecisionNode) -> None:
         self._client = client
 
-    def _lines(self, requests: Iterable[BatchRequest]) -> List[bytes]:
+    def _lines(self, requests: Iterable[BatchRequest], allow_empty: bool = True) -> List[bytes]:
         client = self._client
+        items = list(requests)
+        check_lines(items, allow_empty, client._limits())
         checked = []
-        seen: Set[str] = set()
-        for i, req in enumerate(list(requests), start=1):
-            req = check_line(i, req, seen)
+        for i, req in enumerate(items, start=1):
             try:
                 qs = _base.check_question_map(req.get("questions"))
                 imgs = _base.image_list(req.get("images"))
             except ValueError as exc:
                 raise ValueError("batch request %d: %s" % (i, exc)) from exc
-            check_questions(qs)
-            check_images(imgs)
+            model = req.get("model") or client._settings.model
+            probe: Dict[str, Any] = {"model": model, "state": req.get("state"), "questions": qs}
+            if imgs:
+                probe["images"] = [{"id": ""} for _ in imgs]
+            limits = client._limits(model)
+            check_request(probe, False, limits)
+            check_images(imgs, limits)
             checked.append((req, qs, imgs))
         out = []
         for req, qs, imgs in checked:
-            plan = plan_images(imgs, client._cache, client._settings.inline_threshold)
+            plan = client._plan(imgs)
             out.append(line_bytes(req, qs, client._finish(plan), client._settings.model))
         return out
 
@@ -1041,9 +1073,7 @@ class Batches:
     def add(self, batch_id: str, requests: Iterable[BatchRequest]) -> Batch:
         """Add requests to a draft, in calls of at most 10 MiB, in order. Returns the draft."""
         _batch_path(batch_id)
-        lines = self._lines(requests)
-        if not lines:
-            raise ValueError("add() needs at least one request")
+        lines = self._lines(requests, allow_empty=False)
         return self._add_lines(batch_id, lines)
 
     def _finalize(self, batch_id: str) -> Tuple[Batch, Optional[Dict[str, str]]]:
@@ -1126,6 +1156,8 @@ class AsyncDecisionNode(_Common):
         # The wait between attempts, PUT retries, batch polls and session reopens. Tests
         # replace it to record the waits without sleeping.
         self._sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+        self._clock = time.time
+        self._held = {}
         self.batches = AsyncBatches(self)
 
     # ---- lifecycle
@@ -1277,7 +1309,7 @@ class AsyncDecisionNode(_Common):
                 _base.log_response("PUT", path, status, None, started, attempt)
                 if 200 <= status < 300 or (status == 412 and attempt > 0):
                     return
-                if status == 403 and may_presign and time.monotonic() - presigned_at >= url_ttl:
+                if status == 403 and may_presign and self._clock() - presigned_at >= url_ttl:
                     raise UrlExpired()
                 error = storage_error(img.id, status, resp_headers, response.text)
                 retry = 500 <= status <= 599
@@ -1292,7 +1324,7 @@ class AsyncDecisionNode(_Common):
         for entry in entries:
             check_storage_url(entry["url"])
         url_ttl = float(body.get("expires_in") or 300)
-        presigned_at = time.monotonic()
+        presigned_at = self._clock()
         out: Dict[CacheKey, str] = {}
         expired: List[Image] = []
         results = await asyncio.gather(
@@ -1328,7 +1360,7 @@ class AsyncDecisionNode(_Common):
             out: Dict[CacheKey, str] = {}
             todo: List[Image] = []
             for img, key in zip(images, keys):
-                hit = self._cache.get(key)
+                hit = self._cache.get(key, self._clock())
                 if hit is not None:
                     out[key] = hit
                 elif key not in out and all(cache_key(t) != key for t in todo):
@@ -1344,10 +1376,7 @@ class AsyncDecisionNode(_Common):
         return plan.finish(await self._upload(plan.uploads) if plan.uploads else {})
 
     async def _frame_image(self, image: Any) -> Dict[str, Any]:
-        check_frame_image(image)
-        probe = dict(image, id=image.get("id") or "frame") if isinstance(image, Mapping) else image
-        check_images([probe])
-        plan = plan_images([image], self._cache, self._settings.inline_threshold, strip_id=True)
+        plan = self._plan([image], strip_id=True)
         return (await self._finish(plan))[0]
 
     # ---- decisions
@@ -1364,7 +1393,7 @@ class AsyncDecisionNode(_Common):
             except BadRequestError as exc:
                 if attempt == 0 and plan.placed and exc.error_type in _base.STALE_UPLOAD:
                     self._cache.drop(plan.placed)
-                    plan = plan_images(prep.images, self._cache, self._settings.inline_threshold)
+                    plan = self._plan(prep.images)
                     content = None
                     continue
                 raise
@@ -1504,13 +1533,14 @@ class AsyncDecisionNode(_Common):
         """The models this key may use, with the limits each one publishes."""
         _, _, body = await self._json("GET", _base.MODELS_PATH, None)
         entries = body.get("models") if isinstance(body, Mapping) else None
+        self._hold(entries)
         return [parse_model(m) for m in entries or []]
 
     async def upload(self, images: Sequence[ImageInput]) -> List[str]:
         """Upload local images whatever their size and return the ``upload_id`` of each.
         See :meth:`DecisionNode.upload`."""
         imgs = _base.image_list(images)
-        check_images(imgs)
+        check_images(imgs, self._limits())
         local = []
         for img in imgs:
             if not isinstance(img, Image) or (img.data is None and img.upload_id is None):
@@ -1537,7 +1567,7 @@ class AsyncDecisionNode(_Common):
         ttl_seconds: Optional[int] = None,
     ) -> AsyncSession:
         """Open a session. See :meth:`DecisionNode.open_session`."""
-        content = _session_body(state, questions, instructions, model, window, ttl_seconds, self._settings.model)
+        content = _session_body(self, state, questions, instructions, model, window, ttl_seconds)
         _, headers, body = await self._json("POST", _base.SESSIONS_PATH, content, policy=SESSION_OPEN)
         return AsyncSession(self, body if isinstance(body, dict) else {}, headers)
 
@@ -1595,23 +1625,28 @@ class AsyncBatches:
     def __init__(self, client: AsyncDecisionNode) -> None:
         self._client = client
 
-    async def _lines(self, requests: Iterable[BatchRequest]) -> List[bytes]:
+    async def _lines(self, requests: Iterable[BatchRequest], allow_empty: bool = True) -> List[bytes]:
         client = self._client
+        items = list(requests)
+        check_lines(items, allow_empty, client._limits())
         checked = []
-        seen: Set[str] = set()
-        for i, req in enumerate(list(requests), start=1):
-            req = check_line(i, req, seen)
+        for i, req in enumerate(items, start=1):
             try:
                 qs = _base.check_question_map(req.get("questions"))
                 imgs = _base.image_list(req.get("images"))
             except ValueError as exc:
                 raise ValueError("batch request %d: %s" % (i, exc)) from exc
-            check_questions(qs)
-            check_images(imgs)
+            model = req.get("model") or client._settings.model
+            probe: Dict[str, Any] = {"model": model, "state": req.get("state"), "questions": qs}
+            if imgs:
+                probe["images"] = [{"id": ""} for _ in imgs]
+            limits = client._limits(model)
+            check_request(probe, False, limits)
+            check_images(imgs, limits)
             checked.append((req, qs, imgs))
         out = []
         for req, qs, imgs in checked:
-            plan = plan_images(imgs, client._cache, client._settings.inline_threshold)
+            plan = client._plan(imgs)
             out.append(line_bytes(req, qs, await client._finish(plan), client._settings.model))
         return out
 
@@ -1632,9 +1667,7 @@ class AsyncBatches:
     async def add(self, batch_id: str, requests: Iterable[BatchRequest]) -> Batch:
         """Add requests to a draft, in calls of at most 10 MiB, in order. Returns the draft."""
         _batch_path(batch_id)
-        lines = await self._lines(requests)
-        if not lines:
-            raise ValueError("add() needs at least one request")
+        lines = await self._lines(requests, allow_empty=False)
         return await self._add_lines(batch_id, lines)
 
     async def _finalize(self, batch_id: str) -> Tuple[Batch, Optional[Dict[str, str]]]:

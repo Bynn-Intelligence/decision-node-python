@@ -34,7 +34,7 @@ from typing import (
 from urllib.parse import quote, urlsplit
 
 from . import _base
-from ._errors import BadRequestError, ConnectionError, DecisionNodeError, NotFoundError, TimeoutError
+from ._errors import ConnectionError, DecisionNodeError, NotFoundError, TimeoutError
 from ._images import Image
 from ._types import AnyAnswer, Safety, Usage, parse_answer
 
@@ -229,21 +229,6 @@ def frame_message(seq: int, frame: Any, image: Any, questions: Any, reset: Any) 
     return msg
 
 
-def check_frame_image(image: Any) -> None:
-    if isinstance(image, Image) and image.url is not None:
-        raise BadRequestError(
-            "A frame's image takes bytes or an upload, not a url.",
-            error_type="api_usage_error",
-            reason="a frame's image takes bytes or an upload, not a url",
-        )
-    if isinstance(image, Mapping) and image.get("url") is not None:
-        raise BadRequestError(
-            "A frame's image takes bytes or an upload, not a url.",
-            error_type="api_usage_error",
-            reason="a frame's image takes bytes or an upload, not a url",
-        )
-
-
 def reconnect_wait(failures: int) -> float:
     """Capped backoff from 1 s to 30 s with jitter."""
     return min(RECONNECT_CAP, RECONNECT_BASE * float(2**failures)) * (0.5 + random.random() * 0.5)
@@ -364,6 +349,8 @@ class Session(_SessionInfo):
         """
         if self._ws is None:
             raise ValueError("connect() the session before sending")
+        # Every fixed rule of the frame first: a refused frame writes nothing and takes no seq.
+        questions = self._client._check_frame(self, frame, image, questions, reset, seq)
         wire = self._client._frame_image(image) if image is not None else None
         number = self._next_seq(seq)
         msg = frame_message(number, frame, wire, questions, reset)
@@ -478,6 +465,7 @@ class AsyncSession(_SessionInfo):
         """Send one frame and return its ``seq``. See :meth:`Session.send`."""
         if self._ws is None:
             raise ValueError("connect() the session before sending")
+        questions = self._client._check_frame(self, frame, image, questions, reset, seq)
         wire = await self._client._frame_image(image) if image is not None else None
         number = self._next_seq(seq)
         msg = frame_message(number, frame, wire, questions, reset)

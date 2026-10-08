@@ -191,7 +191,7 @@ def test_local_validation_sends_nothing(mode: str) -> None:
         (lambda: h.decide("s", {}), "at least one"),
         (lambda: h.decide("s"), "mapping"),
         (lambda: h.decide({"x": object()}, {"q": dn.truth("?")}), "JSON"),
-        (lambda: h.decide(float("nan"), {"q": dn.truth("?")}), "JSON"),
+        (lambda: h.decide({"x": float("nan")}, {"q": dn.truth("?")}), "JSON"),
         (lambda: h.decide("s", {"q": dn.truth("?")}, images=[42]), "images"),
         (lambda: h.decide_raw({"x": object()}), "JSON"),
     ]
