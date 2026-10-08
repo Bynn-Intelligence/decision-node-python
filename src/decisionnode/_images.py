@@ -165,6 +165,10 @@ class Image:
         Image("receipt", data="iVBORw0KGgo...")                    # base64 text
         Image("receipt", upload_id="upl_...")                      # an earlier upload
 
+    The id is unique within a request. The model sees the image as "Picture <n>" (its
+    place in the request's images, from 1) with this id beside it, so text in the state
+    or the instructions can refer to it by either.
+
     A file is read when the ``Image`` is made; a file that cannot be read raises
     ``ValueError`` here. Local bytes are checked before any request, without decoding
     the image: JPEG, PNG or WebP by their first bytes (a ``media_type`` given with them

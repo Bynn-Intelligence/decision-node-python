@@ -197,8 +197,9 @@ def point(instructions: Any = None, image: Optional[str] = None, units: Optional
     Args:
         instructions: What to find: a phrase, a description with conditions, or a
             question. Required by the API.
-        image: The id of the image to look in. Required when the request has two or
-            more images.
+        image: The id of the image to look in (a string), required when the request
+            has two or more images. A reference by number ("Picture 2") goes in the
+            instructions.
         units: ``"pixels"`` (the API's default) or ``"normalized"`` (fractions of the
             width and height, from 0 to 1).
 
@@ -214,8 +215,9 @@ def box(instructions: Any = None, image: Optional[str] = None, units: Optional[s
 
     Args:
         instructions: What to find. Required by the API.
-        image: The id of the image to look in. Required when the request has two or
-            more images.
+        image: The id of the image to look in (a string), required when the request
+            has two or more images. A reference by number ("Picture 2") goes in the
+            instructions.
         units: ``"pixels"`` (the API's default) or ``"normalized"``.
 
     >>> box("Draw a box around the damaged package.", image="belt")

@@ -230,6 +230,25 @@ d = dn.decide(state="...", images=[Image("front", upload_id=upload_ids[0])], que
 `upload(images)` uploads 1 to 16 images whatever their size and returns one `upload_id` per image. An
 upload can be used for one hour by any key of your workspace.
 
+### Referring to images and videos
+
+The model sees each image as "Picture 1", "Picture 2", ... with its id beside it, numbered
+from 1 in the order of `images`, and each video as "Video 1", "Video 2", ... in the order of
+`videos`, numbered separately. Text in the state, the instructions or a criterion can refer
+to an image by position ("Picture 2", "image 2", "the second image", "the last image") or by
+its id ("the receipt", "`receipt`"), and to a video the same way ("Video 1" or its id).
+
+```python
+d = dn.decide(
+    state="Expense claim 4411.",
+    images=[
+        Image("receipt", url="https://files.example.com/claims/4411/receipt.jpg"),
+        Image("statement", url="https://files.example.com/claims/4411/statement.png"),
+    ],
+    questions={"charged": truth("Does the total in Picture 1 match the charge on the statement?")},
+)
+```
+
 ## Points and boxes
 
 A `point` question finds one spot in an image; a `box` question draws a rectangle around
@@ -267,7 +286,8 @@ Every field is always there. When several things match, the answer is the best m
 say which one you mean in the instructions ("the leftmost yellow package").
 
 A point or box question needs an image in the request. With two or more images, name the
-one to look in with `image`. These rules and `units` (`"pixels"` or `"normalized"`) are
+one to look in with `image`, the image's id; a reference by number ("Picture 2") goes in
+the instructions. These rules and `units` (`"pixels"` or `"normalized"`) are
 checked before anything is sent, and a fault raises `ValidationError` as the API would.
 `decide`, `decide_many` and batch requests take point and box questions.
 

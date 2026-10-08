@@ -74,8 +74,10 @@ class Video:
         Video("dock", [VideoFrame(30.0, f0), VideoFrame(30.5, f1)], fps=2)
 
     Args:
-        id: The video's id, unique across the request's images and videos. Instructions
-            can refer to the video by it.
+        id: The video's id, unique across the request's images and videos. The model
+            sees the video as "Video <n>" (its place in the request's videos, from 1)
+            with this id beside it, so text in the state or the instructions can refer
+            to it by either.
         frames: The frames in time order, as :class:`VideoFrame` objects or wire-form mappings.
         fps: The most frames a second the API reads (above 0, at most 4; the API's
             default is 2). Frames closer together than that are skipped by the API.
