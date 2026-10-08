@@ -232,20 +232,27 @@ upload can be used for one hour by any key of your workspace.
 
 ### Referring to images and videos
 
-The model sees each image as "Picture 1", "Picture 2", ... with its id beside it, numbered
-from 1 in the order of `images`, and each video as "Video 1", "Video 2", ... in the order of
-`videos`, numbered separately. Text in the state, the instructions or a criterion can refer
-to an image by position ("Picture 2", "image 2", "the second image", "the last image") or by
-its id ("the receipt", "`receipt`"), and to a video the same way ("Video 1" or its id).
+There are two ways to say which image a question is about:
+
+1. **By id (recommended).** Give each image a short, meaningful id and use it in the
+   instructions, in backticks: "Does the total on `receipt` match the amount in the claim?"
+2. **By number.** Images are numbered from 1 in the order of `images`: "image 2", "the
+   second image", "Picture 2" and "the last image" all work.
+
+The model sees each image as `Picture 1 (receipt):`, `Picture 2 (claim_photo):`, so both
+ways point to the same image. Prefer ids: they stay right when images are added or
+reordered. Use names, not digits, as ids (`front`, not `2`). Videos work the same way, by id
+or by number ("video 1"), numbered separately in the order of `videos`. The `image` of a
+point or box question takes the id.
 
 ```python
 d = dn.decide(
-    state="Expense claim 4411.",
+    state="Expense claim 4411: 740.00 EUR.",
     images=[
         Image("receipt", url="https://files.example.com/claims/4411/receipt.jpg"),
-        Image("statement", url="https://files.example.com/claims/4411/statement.png"),
+        Image("claim_photo", url="https://files.example.com/claims/4411/photo.jpg"),
     ],
-    questions={"charged": truth("Does the total in Picture 1 match the charge on the statement?")},
+    questions={"matches": truth("Does the total on `receipt` match the amount in the claim?")},
 )
 ```
 
