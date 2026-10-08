@@ -2,15 +2,19 @@
 
 Every case runs twice: once with ``DecisionNode`` and once with ``AsyncDecisionNode``.
 
-Set ``DECISIONNODE_CONFORMANCE_DIR`` to a checkout of the suite. When it is unset, or
-does not point at the suite, the conformance tests fail; they are never skipped.
+The suite is found through ``DECISIONNODE_CONFORMANCE_DIR``, else a checkout at
+``conformance/`` in the repository root (where CI puts it). When neither holds the
+suite, the conformance tests fail; they are never skipped.
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import http.client
+import inspect
+import itertools
 import json
 import os
 import re
@@ -20,7 +24,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 import httpx
 import pytest
@@ -31,13 +35,12 @@ KINDS = ("requests", "responses", "errors", "behaviour", "constants")
 ENV_VARS = ("DECISIONNODE_API_KEY", "DECISIONNODE_BASE_URL", "DECISIONNODE_MODEL")
 EXACT = {"probabilities", "legend", "raw", "entries", "safety", "body", "limits"}
 MODES = ("sync", "async")
+REPO = Path(__file__).resolve().parents[2]
 
 
 def _suite_dir() -> Optional[Path]:
     configured = os.environ.get("DECISIONNODE_CONFORMANCE_DIR")
-    if not configured:
-        return None
-    path = Path(configured)
+    path = Path(configured) if configured else REPO / "conformance"
     if (path / "cases").is_dir() and (path / "mock" / "server.py").is_file():
         return path.resolve()
     return None
@@ -81,19 +84,27 @@ class Mock:
         assert parts.hostname is not None
         self.host, self.port = parts.hostname, parts.port
 
-    def get_json(self, path: str) -> Any:
+    def raw(self, method: str, path: str, body: Optional[bytes] = None) -> Any:
         conn = http.client.HTTPConnection(self.host, self.port, timeout=30)
         try:
-            conn.request("GET", path)
-            return json.loads(conn.getresponse().read().decode("utf-8"))
+            headers = {"Content-Type": "application/json"} if body is not None else {}
+            conn.request(method, path, body=body, headers=headers)
+            return json.loads(conn.getresponse().read().decode("utf-8") or "null")
         finally:
             conn.close()
 
     def requests(self, session: str, path: Optional[str] = None) -> Dict[str, Any]:
-        query = {"session": session}
+        query = "session=" + quote(session, safe="")
         if path is not None:
-            query["path"] = path
-        return self.get_json("/_mock/requests?" + urlencode(query))  # type: ignore[no-any-return]
+            query += "&path=" + quote(path, safe="")
+        out: Dict[str, Any] = self.raw("GET", "/_mock/requests?" + query)
+        # Pongs on a session's socket are counted apart, not as requests.
+        out["pongs"] = sum(1 for r in out["requests"] if r["method"] == "PONG")
+        out["requests"] = [r for r in out["requests"] if r["method"] != "PONG"]
+        return out
+
+    def clock(self, session: str, body: Dict[str, Any]) -> None:
+        self.raw("POST", "/_mock/clock?session=" + quote(session, safe=""), json.dumps(body).encode())
 
 
 @pytest.fixture(scope="module")
@@ -131,6 +142,11 @@ class Fail(AssertionError):
     pass
 
 
+def short(value: Any) -> str:
+    text = json.dumps(value, ensure_ascii=False, default=repr)
+    return text if len(text) < 200 else text[:197] + "..."
+
+
 def same(a: Any, b: Any) -> bool:
     """JSON equality: bools apart from numbers, numbers compared exactly as doubles."""
     if isinstance(a, bool) or isinstance(b, bool):
@@ -148,15 +164,15 @@ def match(expected: Any, actual: Any, path: str) -> None:
     if isinstance(expected, dict) and isinstance(actual, dict):
         for k, v in expected.items():
             if k not in actual:
-                raise Fail("%s.%s: missing (expected %r)" % (path, k, v))
+                raise Fail("%s.%s: missing (expected %s)" % (path, k, short(v)))
             if k in EXACT:
                 if not same(v, actual[k]):
-                    raise Fail("%s.%s: expected %r, got %r" % (path, k, v, actual[k]))
+                    raise Fail("%s.%s: expected %s, got %s" % (path, k, short(v), short(actual[k])))
             else:
                 match(v, actual[k], "%s.%s" % (path, k))
         return
     if not same(expected, actual):
-        raise Fail("%s: expected %r, got %r" % (path, expected, actual))
+        raise Fail("%s: expected %s, got %s" % (path, short(expected), short(actual)))
 
 
 def pointer(doc: Any, ptr: str) -> Tuple[bool, Any]:
@@ -186,7 +202,16 @@ JSON_TYPES: Dict[str, Callable[[Any], bool]] = {
 # --------------------------------------------------------------------------- normalisation
 
 
-def norm_answer(a: dn.Answer) -> Dict[str, Any]:
+def norm_answer(a: Any) -> Dict[str, Any]:
+    if isinstance(a, dn.NumberAnswer):
+        return {
+            "kind": "number",
+            "type": a.type,
+            "number": a.number,
+            "expected": a.expected,
+            "confidence": a.confidence,
+            "probabilities": a.probabilities,
+        }
     if isinstance(a, dn.TruthAnswer):
         return {"kind": "truth", "type": a.type, "truth": a.truth}
     if isinstance(a, dn.ChoiceAnswer):
@@ -208,7 +233,8 @@ def norm_answer(a: dn.Answer) -> Dict[str, Any]:
             "probabilities": {str(k): v for k, v in a.probabilities.items()},
             "legend": {str(k): v for k, v in a.legend.items()},
         }
-    assert isinstance(a, dn.UnknownAnswer)
+    if not isinstance(a, dn.UnknownAnswer):
+        raise Fail("answer of class %s is none of the answer types" % type(a).__name__)
     return {"kind": "unknown", "type": a.type, "raw": a.raw}
 
 
@@ -234,7 +260,6 @@ def norm_error(e: dn.DecisionNodeError) -> Dict[str, Any]:
     return {
         "status": e.status,
         "error_type": e.error_type,
-        # The error's own message, never a second field; "" reads as empty.
         "message": e.message,
         "request_id": e.request_id,
         "reason": e.reason,
@@ -245,7 +270,42 @@ def norm_error(e: dn.DecisionNodeError) -> Dict[str, Any]:
     }
 
 
-def check_error(spec: Dict[str, Any], err: BaseException, path: str) -> None:
+def norm_session(s: Any) -> Dict[str, Any]:
+    if not isinstance(s, (dn.Session, dn.AsyncSession)):
+        raise Fail("expected a Session, got %r" % (s,))
+    out = dict(s.raw)
+    out["answers"] = {k: norm_answer(v) for k, v in s.answers.items()}
+    return out
+
+
+def norm_event(ev: Any) -> Dict[str, Any]:
+    if isinstance(ev, dn.Reply):
+        out = {
+            "seq": ev.seq,
+            "answers": {k: norm_answer(v) for k, v in ev.answers.items()},
+            "usage": ev.raw.get("usage"),
+            "latency_ms": ev.latency_ms,
+            "safety": ev.raw.get("safety"),
+        }
+        if ev.dropped is not None:
+            out["dropped"] = ev.dropped
+        return {"reply": out}
+    if isinstance(ev, dn.FrameError):
+        out = {"seq": ev.seq, "error_type": ev.error_type, "message": ev.message}
+        extra = {
+            "category": ev.category,
+            "retry_after_ms": ev.retry_after_ms,
+            "usage": ev.raw.get("usage"),
+            "safety": ev.raw.get("safety"),
+        }
+        out.update({k: v for k, v in extra.items() if v is not None})
+        return {"frame_error": out}
+    if isinstance(ev, dn.SessionClosed):
+        return {"closed": {"code": ev.code, "reopen": ev.reopen}}
+    raise Fail("unknown session event %r" % (ev,))
+
+
+def check_error(spec: Dict[str, Any], err: Any, path: str) -> None:
     cls_name = spec["error"] if "error" in spec else spec["class"]
     if not isinstance(err, dn.DecisionNodeError):
         raise Fail("%s: expected %s, got %r" % (path, cls_name, err))
@@ -258,52 +318,153 @@ def check_error(spec: Dict[str, Any], err: BaseException, path: str) -> None:
     match(spec.get("fields", {}), norm_error(err), path + ".fields")
 
 
+def check_batch_results(expected: List[Dict[str, Any]], results: Any, path: str) -> None:
+    results = list(results)
+    if len(results) != len(expected):
+        raise Fail("%s: expected %d results, got %d" % (path, len(expected), len(results)))
+    for i, (spec, res) in enumerate(zip(expected, results)):
+        where = "%s[%d]" % (path, i)
+        if not isinstance(res, dn.BatchResult):
+            raise Fail("%s: expected a BatchResult, got %r" % (where, res))
+        for key in ("custom_id", "status"):
+            if key in spec and not same(spec[key], getattr(res, key)):
+                raise Fail("%s.%s: expected %s, got %s" % (where, key, short(spec[key]), short(getattr(res, key))))
+        if "headers" in spec:
+            match(spec["headers"], res.headers, where + ".headers")
+        if "decision" in spec:
+            if res.decision is None:
+                raise Fail("%s: expected a decision, got none" % where)
+            match(spec["decision"], norm_decision(res.decision), where + ".decision")
+        if "error" in spec:
+            if res.error is None:
+                raise Fail("%s: expected an error value, got none" % where)
+            check_error(spec["error"], res.error, where + ".error")
+        if spec.get("no_decision") and res.decision is not None:
+            raise Fail("%s: expected no decision" % where)
+
+
 # --------------------------------------------------------------------------- calls
 
 
-def decode(value: Any) -> Any:
+def image_bytes(args: Dict[str, Any]) -> bytes:
+    assert SUITE is not None
+    if "path" in args:
+        data = (SUITE / args["path"]).read_bytes()
+    else:
+        data = base64.b64decode(args["data_base64"])
+    if "pad_to" in args:
+        # The image's own bytes, then zero bytes: same header, the size the case needs.
+        data = data + b"\0" * max(0, args["pad_to"] - len(data))
+    return data
+
+
+def decode(value: Any, ctx: Dict[str, Any]) -> Any:
     if isinstance(value, dict) and len(value) == 1:
         ((key, args),) = value.items()
+        if key == "$ref":
+            return resolve_ref(args, ctx)
+        if key == "$text":
+            return args["repeat"] * args["times"]
         if key == "$truth":
             return dn.truth(args.get("instructions"), if_true=args.get("true"), if_false=args.get("false"))
         if key == "$choice":
             return dn.choice(args.get("instructions"), args["options"])
         if key == "$score":
             return dn.score(args.get("instructions"), args["levels"])
+        if key == "$number":
+            return dn.number(args.get("instructions"), args.get("min"), args.get("max"), args.get("step"))
         if key == "$image":
             assert SUITE is not None
-            if "path" in args:
-                return dn.Image(args["id"], path=SUITE / args["path"])
+            args = {k: decode(v, ctx) for k, v in args.items()}
             if "url" in args:
                 return dn.Image(args["id"], url=args["url"])
+            if "upload_id" in args:
+                return dn.Image(args["id"], upload_id=args["upload_id"], media_type=args.get("media_type"))
+            if "path" in args and "pad_to" not in args:
+                return dn.Image(args["id"], path=SUITE / args["path"], media_type=args.get("media_type"))
             # Without media_type only the raw bytes are passed, and the SDK detects the format.
-            return dn.Image(args["id"], data=base64.b64decode(args["data_base64"]), media_type=args.get("media_type"))
+            return dn.Image(args["id"], data=image_bytes(args), media_type=args.get("media_type"))
     if isinstance(value, dict):
-        return {k: decode(v) for k, v in value.items()}
+        return {k: decode(v, ctx) for k, v in value.items()}
     if isinstance(value, list):
-        return [decode(v) for v in value]
+        return [decode(v, ctx) for v in value]
     return value
 
 
-def call_args(call: Dict[str, Any]) -> Dict[str, Any]:
-    if call["method"] == "decide_raw":
-        return {"body": call["args"]["body"]}
-    args = {k: decode(v) for k, v in call["args"].items()}
-    if "true" in args:
-        args["if_true"] = args.pop("true")
-    if "false" in args:
-        args["if_false"] = args.pop("false")
-    return args
+def resolve_ref(path: str, ctx: Dict[str, Any]) -> Any:
+    name, _, rest = path.partition(".")
+    cur = ctx[name]
+    for part in rest.split(".") if rest else []:
+        if isinstance(cur, dict):
+            cur = cur[part]
+        elif isinstance(cur, (list, tuple)):
+            cur = cur[int(part)]
+        else:
+            cur = getattr(cur, part)
+    return cur
 
 
-def client_kwargs(
-    case: Dict[str, Any], mock_url: str, extra_headers: Dict[str, str], env: pytest.MonkeyPatch
-) -> Dict[str, Any]:
+async def settle(value: Any) -> Any:
+    return await value if inspect.isawaitable(value) else value
+
+
+async def collect(results: Any) -> List[Any]:
+    if hasattr(results, "__aiter__"):
+        return [r async for r in results]
+    return list(results)
+
+
+async def invoke(client: Any, mode: str, call: Dict[str, Any], ctx: Dict[str, Any]) -> Any:
+    method, args = call["method"], call["args"]
+    if method == "decide_raw":
+        return await settle(client.decide_raw(args["body"]))
+    a = {k: decode(v, ctx) for k, v in args.items()}
+    if "true" in a:
+        a["if_true"] = a.pop("true")
+    if "false" in a:
+        a["if_false"] = a.pop("false")
+    if method.startswith("batches."):
+        result = await settle(getattr(client.batches, method.split(".", 1)[1])(**a))
+        if method == "batches.results":
+            return await collect(result)
+        return result
+    if method == "run_batch":
+        run = await settle(client.run_batch(**a))
+        return dn.BatchRun(run.batch, await collect(run.results))
+    if method == "supervise":
+        replies: List[Any] = []
+        interval = a.pop("feed_interval_ms", 0) / 1000.0
+        readings = a.pop("feed")
+        if mode == "sync":
+
+            def feed() -> Iterator[Dict[str, Any]]:
+                for i, reading in enumerate(readings):
+                    if i:
+                        time.sleep(interval)
+                    yield reading
+
+            closed = client.supervise(a["body"], feed(), replies.append)
+        else:
+
+            async def afeed() -> Any:
+                for i, reading in enumerate(readings):
+                    if i:
+                        await asyncio.sleep(interval)
+                    yield reading
+
+            closed = await client.supervise(a["body"], afeed(), replies.append)
+        return {"supervised": True, "replies": replies, "closed": closed}
+    return await settle(getattr(client, method)(**a))
+
+
+def make_client(
+    case: Dict[str, Any], mode: str, mock_url: str, extra_headers: Dict[str, str], env: pytest.MonkeyPatch
+) -> Any:
     for var, val in (case.get("env") or {}).items():
         env.setenv(var, val.replace("{mock_url}", mock_url))
     spec = dict(case.get("client") or {})
     kwargs: Dict[str, Any] = {}
-    for k in ("api_key", "model", "timeout", "max_retries"):
+    for k in ("api_key", "model", "timeout", "max_retries", "inline_threshold"):
         if spec.get(k) is not None:
             kwargs[k] = spec[k]
     if "base_url" in spec:
@@ -317,157 +478,35 @@ def client_kwargs(
     kwargs["headers"] = headers
     if spec.get("http_client") is not None:
         assert spec["http_client"] == "caller_following_redirects", spec["http_client"]
-        kwargs["http_client"] = spec["http_client"]
-    return kwargs
-
-
-def invoke(
-    mode: str,
-    kwargs: Dict[str, Any],
-    call: Dict[str, Any],
-    waits: Optional[List[float]] = None,
-    catch: type = dn.DecisionNodeError,
-) -> Any:
-    """Build the client and make the call; return the result, or the DecisionNodeError or
-    argument error that building the client or the call raised.
-
-    With ``waits``, the client's wait between attempts is replaced by a recorder that
-    notes each wait in milliseconds and returns at once. ``http_client`` set to
-    ``caller_following_redirects`` passes an httpx client of the caller's that is set to
-    follow redirects. ``catch`` is the error class the call is caught through, by its
-    exported name.
-    """
-    kwargs = dict(kwargs)
-    caller_http = kwargs.pop("http_client", None) is not None
-    caught = (catch, ValueError)
+        # A client of the caller's that is set to follow redirects.
+        if mode == "sync":
+            kwargs["http_client"] = httpx.Client(follow_redirects=True)
+        else:
+            kwargs["http_client"] = httpx.AsyncClient(follow_redirects=True)
     if mode == "sync":
-        own = httpx.Client(follow_redirects=True) if caller_http else None
-        try:
-            args = call_args(call)
-            with dn.DecisionNode(**kwargs, http_client=own) as client:
-                if waits is not None:
-                    client._sleep = lambda seconds: waits.append(seconds * 1000)
-                return getattr(client, call["method"])(**args)
-        except caught as exc:
-            return exc
-        finally:
-            if own is not None:
-                own.close()
-
-    async def record(seconds: float) -> None:
-        assert waits is not None
-        waits.append(seconds * 1000)
-
-    async def run() -> Any:
-        own = httpx.AsyncClient(follow_redirects=True) if caller_http else None
-        try:
-            args = call_args(call)
-            async with dn.AsyncDecisionNode(**kwargs, http_client=own) as client:
-                if waits is not None:
-                    client._sleep = record
-                return await getattr(client, call["method"])(**args)
-        except caught as exc:
-            return exc
-        finally:
-            if own is not None:
-                await own.aclose()
-
-    return asyncio.run(run())
+        return dn.DecisionNode(**kwargs)
+    return dn.AsyncDecisionNode(**kwargs)
 
 
-# --------------------------------------------------------------------------- the four kinds
+def record_waits(client: Any, mode: str, waits: List[float]) -> None:
+    """Replace the client's wait with a recorder that notes each wait in milliseconds."""
+    if mode == "sync":
+        client._sleep = lambda seconds: waits.append(seconds * 1000)
+    else:
+
+        async def record(seconds: float) -> None:
+            waits.append(seconds * 1000)
+
+        client._sleep = record
 
 
-def run_request(case: Dict[str, Any], mock: Mock, mode: str, env: pytest.MonkeyPatch) -> None:
-    session = uuid.uuid4().hex
-    result = invoke(mode, client_kwargs(case, mock.url, {"x-mock-session": session}, env), case["call"])
-    if isinstance(result, BaseException):
-        raise Fail("the call failed: %r" % result)
-    log = mock.requests(session)["requests"]
-    if len(log) != 1:
-        raise Fail("expected 1 request, the mock received %d" % len(log))
-    got = log[0]
-    exp = case["expect"]["request"]
-    assert got["method"] == exp["method"]
-    assert got["path"] == exp["path"]
-    headers = got["headers"]
-    for name, value in exp.get("headers", {}).items():
-        assert headers.get(name.lower()) == value, "header %s" % name
-    for name, pattern in exp.get("header_patterns", {}).items():
-        val = headers.get(name.lower())
-        assert val is not None and re.search(pattern, val), "header %s: %r does not match %s" % (name, val, pattern)
-    for name in exp.get("absent_headers", []):
-        assert name.lower() not in headers, "header %s must not be sent" % name
-    body = json.loads(got["body_text"]) if got["body_text"] else None
-    if "body" in exp:
-        if not same(exp["body"], body):
-            raise Fail("body: expected %r, got %r" % (exp["body"], body))
-    elif "body_checks" not in exp and got["body_text"]:
-        raise Fail("expected no body, got %r" % got["body_text"])
-    for check in exp.get("body_checks", []):
-        found, val = pointer(body, check["pointer"])
-        assert found, "body%s: missing" % check["pointer"]
-        if "equals" in check:
-            assert same(check["equals"], val), "body%s: expected %r, got %r" % (check["pointer"], check["equals"], val)
-        if "type" in check:
-            assert JSON_TYPES[check["type"]](val), "body%s: expected a %s" % (check["pointer"], check["type"])
-        if "keys" in check:
-            assert isinstance(val, dict) and list(val) == check["keys"], "body%s: keys" % check["pointer"]
-    for ptr in exp.get("ordered_keys", []):
-        _, want = pointer(exp["body"], ptr)
-        doc = json.loads(
-            got["body_text"],
-            object_pairs_hook=lambda pairs: {"__keys__": [k for k, _ in pairs], **dict(pairs)},
-        )
-        _, node = pointer(doc, ptr)
-        assert node["__keys__"] == list(want), "body%s: key order" % ptr
+async def close_client(client: Any) -> None:
+    if client is None:
+        return
+    await settle(client.close())
 
 
-def run_response(case: Dict[str, Any], mock: Mock, mode: str, env: pytest.MonkeyPatch) -> None:
-    session = uuid.uuid4().hex
-    extra = {"x-mock-session": session, "x-mock-scenario": "response/" + case["id"]}
-    kwargs = client_kwargs({"client": {"api_key": "dn_test_conformance"}}, mock.url, extra, env)
-    result = invoke(mode, kwargs, case["call"])
-    if isinstance(result, BaseException):
-        raise Fail("the call failed: %r" % result)
-    exp = case["expect"]
-    if "decision" in exp:
-        assert isinstance(result, dn.Decision)
-        match(exp["decision"], norm_decision(result), "decision")
-    elif "answer" in exp:
-        match(exp["answer"], norm_answer(result), "answer")
-    elif "models" in exp:
-        got = [
-            {"name": m.name, "description": m.description, "release_date": m.release_date, "limits": m.limits}
-            for m in result
-        ]
-        assert all(type(m) is dn.ModelInfo for m in result), "models() must return ModelInfo entries"
-        if not same(exp["models"], got):
-            raise Fail("models: expected %r, got %r" % (exp["models"], got))
-    elif "raw" in exp:
-        if not same(exp["raw"], result):
-            raise Fail("raw: expected %r, got %r" % (exp["raw"], result))
-
-
-def run_error(case: Dict[str, Any], mock: Mock, mode: str, env: pytest.MonkeyPatch) -> None:
-    session = uuid.uuid4().hex
-    extra = {"x-mock-session": session, "x-mock-scenario": "error/" + case["id"]}
-    spec = case["expect"]["error"]
-    catch: type = dn.DecisionNodeError
-    if "catch_as" in spec:
-        # Caught through the exported name, as a caller writes `except DecisionNodeError`.
-        catch = getattr(dn, spec["catch_as"], None)  # type: ignore[assignment]
-        if not (isinstance(catch, type) and issubclass(catch, BaseException)) or spec["catch_as"] not in dn.__all__:
-            raise Fail("the package exports no error class named %s" % spec["catch_as"])
-    try:
-        result = invoke(mode, client_kwargs(case, mock.url, extra, env), case["call"], catch=catch)
-    except Exception as exc:  # noqa: BLE001 - anything the name does not catch fails the case
-        raise Fail("raised %s (%s), which %s does not catch" % (type(exc).__name__, exc, catch.__name__)) from exc
-    if not isinstance(result, BaseException):
-        raise Fail("no error was raised")
-    check_error(case["expect"]["error"], result, "error")
-    log = mock.requests(session)["requests"]
-    assert len(log) == 1, "expected 1 attempt with max_retries 0, got %d" % len(log)
+# --------------------------------------------------------------------------- outcomes
 
 
 def check_outcome(spec: Dict[str, Any], result: Any, path: str) -> None:
@@ -477,36 +516,425 @@ def check_outcome(spec: Dict[str, Any], result: Any, path: str) -> None:
         return
     if isinstance(result, ValueError) and not isinstance(result, dn.DecisionNodeError):
         raise Fail("%s: unexpected argument error: %s" % (path, result))
-    if "result" in spec:
-        if isinstance(result, BaseException):
-            raise Fail("%s: expected a decision, got %s: %s" % (path, type(result).__name__, result))
+    if "result" not in spec:
+        if not isinstance(result, dn.DecisionNodeError):
+            raise Fail("%s: expected %s, got %r" % (path, spec["error"], result))
+        check_error(spec, result, path)
+        return
+    if isinstance(result, BaseException):
+        raise Fail("%s: expected %s, got %s: %s" % (path, spec["result"], type(result).__name__, result))
+    kind = spec["result"]
+    if kind == "decision":
+        if not isinstance(result, dn.Decision):
+            raise Fail("%s: expected a Decision, got %r" % (path, result))
         if "decision" in spec:
             match(spec["decision"], norm_decision(result), path + ".decision")
+    elif kind == "answer":
+        match(spec.get("answer", {}), norm_answer(result), path + ".answer")
+    elif kind == "batch":
+        if not isinstance(result, dn.Batch):
+            raise Fail("%s: expected a Batch, got %r" % (path, result))
+        match(spec.get("batch", {}), result.raw, path + ".batch")
+    elif kind == "batch_page":
+        if not isinstance(result, dn.BatchPage):
+            raise Fail("%s: expected a BatchPage, got %r" % (path, result))
+        match(spec.get("batch_page", {}), result.raw, path + ".batch_page")
+    elif kind == "batch_results":
+        check_batch_results(spec["batch_results"], result, path + ".batch_results")
+    elif kind == "batch_run":
+        if not isinstance(result, dn.BatchRun):
+            raise Fail("%s: expected a BatchRun, got %r" % (path, result))
+        match(spec.get("batch", {}), result.batch.raw, path + ".batch")
+        if "batch_results" in spec:
+            check_batch_results(spec["batch_results"], result.results, path + ".batch_results")
+    elif kind == "session":
+        match(spec.get("session", {}), norm_session(result), path + ".session")
+    elif kind == "upload_ids":
+        if not isinstance(result, list) or len(result) != spec.get("count", len(result)):
+            raise Fail("%s: expected %s upload ids, got %r" % (path, spec.get("count"), result))
+        for uid in result:
+            if not re.fullmatch(r"upl_[0-9a-f]{32}", uid or ""):
+                raise Fail("%s: %r is not an upload id" % (path, uid))
+        if spec.get("distinct") is not None and (len(set(result)) == len(result)) != spec["distinct"]:
+            raise Fail("%s: upload ids %s" % (path, result))
+    elif kind == "supervised":
+        if not isinstance(result, dict) or not result.get("supervised"):
+            raise Fail("%s: expected supervise to return" % path)
+        replies = [ev for ev in result["replies"] if isinstance(ev, dn.Reply)]
+        in_range(spec.get("replies", {}), len(replies), "replies")
+        if "closed" in spec:
+            closed = result["closed"]
+            got = None if closed is None else {"code": closed.code, "reopen": closed.reopen}
+            if not same(spec["closed"], got):
+                raise Fail("%s.closed: expected %s, got %s" % (path, spec["closed"], got))
     else:
-        if not isinstance(result, BaseException):
-            raise Fail("%s: expected %s, got a result" % (path, spec["error"]))
-        check_error(spec, result, path)
+        raise Fail("%s: unknown outcome kind %s" % (path, kind))
 
 
 def in_range(r: Dict[str, float], value: float, what: str) -> None:
-    if "min" in r:
-        assert value >= r["min"], "%s %.0f is below %s" % (what, value, r["min"])
-    if "max" in r:
-        assert value <= r["max"], "%s %.0f is above %s" % (what, value, r["max"])
+    if "min" in r and value < r["min"]:
+        raise Fail("%s %.0f is below %s" % (what, value, r["min"]))
+    if "max" in r and value > r["max"]:
+        raise Fail("%s %.0f is above %s" % (what, value, r["max"]))
 
 
-def run_behaviour(case: Dict[str, Any], mock: Mock, mode: str, env: pytest.MonkeyPatch) -> None:
+# --------------------------------------------------------------------------- requests on the wire
+
+
+def parse_jsonl(text: str) -> List[Any]:
+    stripped = text.strip()
+    if stripped == "":
+        return []
+    if stripped.startswith("["):
+        return json.loads(stripped)  # type: ignore[no-any-return]
+    return [json.loads(line) for line in text.split("\n") if line.strip()]
+
+
+def check_value(check: Dict[str, Any], body: Any, where: str) -> None:
+    found, val = pointer(body, check["pointer"])
+    if check.get("absent"):
+        if found:
+            raise Fail("%s body%s: must be absent, got %s" % (where, check["pointer"], short(val)))
+        return
+    if not found:
+        raise Fail("%s body%s: missing" % (where, check["pointer"]))
+    if "equals" in check and not same(check["equals"], val):
+        raise Fail("%s body%s: expected %s, got %s" % (where, check["pointer"], short(check["equals"]), short(val)))
+    if "type" in check and not JSON_TYPES[check["type"]](val):
+        raise Fail("%s body%s: expected a %s" % (where, check["pointer"], check["type"]))
+    if "pattern" in check and (not isinstance(val, str) or not re.search(check["pattern"], val)):
+        raise Fail("%s body%s: %s does not match %s" % (where, check["pointer"], short(val), check["pattern"]))
+    if "keys" in check and (not isinstance(val, dict) or list(val) != check["keys"]):
+        raise Fail("%s body%s: keys expected %s, got %s" % (where, check["pointer"], check["keys"], short(val)))
+
+
+def check_request(exp: Dict[str, Any], got: Dict[str, Any], where: str) -> None:
+    if got["method"] != exp["method"]:
+        raise Fail("%s method: expected %s, got %s %s" % (where, exp["method"], got["method"], got["path"]))
+    if "path" in exp and got["path"] != exp["path"]:
+        raise Fail("%s path: expected %s, got %s" % (where, exp["path"], got["path"]))
+    if "path_pattern" in exp and not re.search(exp["path_pattern"], got["path"]):
+        raise Fail("%s path: %s does not match %s" % (where, got["path"], exp["path_pattern"]))
+    if "query" in exp:
+        query = {k: v[0] for k, v in parse_qs(got.get("query") or "", keep_blank_values=True).items()}
+        if query != exp["query"]:
+            raise Fail("%s query: expected %s, got %s" % (where, exp["query"], query))
+    if "status" in exp and got.get("status") != exp["status"]:
+        raise Fail("%s status: the mock answered %s, expected %s" % (where, got.get("status"), exp["status"]))
+    headers = got["headers"]
+    for name, value in exp.get("headers", {}).items():
+        if headers.get(name.lower()) != value:
+            raise Fail("%s header %s: expected %r, got %r" % (where, name, value, headers.get(name.lower())))
+    for name, pattern in exp.get("header_patterns", {}).items():
+        val = headers.get(name.lower())
+        if val is None or not re.search(pattern, val):
+            raise Fail("%s header %s: %r does not match %s" % (where, name, val, pattern))
+    for name in exp.get("absent_headers", []):
+        if name.lower() in headers:
+            raise Fail("%s header %s must not be sent" % (where, name))
+    if "body_base64" in exp:
+        if got.get("body_base64") != exp["body_base64"]:
+            raise Fail("%s body: the bytes differ from the expected bytes" % where)
+        return
+    if "body_sha256" in exp:
+        digest = hashlib.sha256(base64.b64decode(got.get("body_base64") or "")).hexdigest()
+        if digest != exp["body_sha256"]:
+            raise Fail("%s body: sha256 %s, expected %s" % (where, digest, exp["body_sha256"]))
+        return
+    if "jsonl" in exp:
+        lines = parse_jsonl(got["body_text"])
+        if not same(exp["jsonl"], lines):
+            raise Fail("%s body lines: expected %s, got %s" % (where, short(exp["jsonl"]), short(lines)))
+        return
+    if "jsonl_count" in exp or "jsonl_checks" in exp:
+        lines = parse_jsonl(got["body_text"])
+        if "jsonl_count" in exp and len(lines) != exp["jsonl_count"]:
+            raise Fail("%s body: expected %d lines, got %d" % (where, exp["jsonl_count"], len(lines)))
+        for check in exp.get("jsonl_checks", []):
+            if check["line"] >= len(lines):
+                raise Fail("%s body: no line %d" % (where, check["line"]))
+            check_value(check, lines[check["line"]], "%s line %d" % (where, check["line"]))
+        return
+    body = json.loads(got["body_text"]) if got["body_text"] else None
+    if "body" in exp:
+        if not same(exp["body"], body):
+            raise Fail("%s body: expected %s, got %s" % (where, short(exp["body"]), short(body)))
+    elif "body_checks" not in exp and got["body_text"] and not exp.get("any_body"):
+        raise Fail("%s expected no body, got %s" % (where, short(got["body_text"])))
+    for check in exp.get("body_checks", []):
+        check_value(check, body, where)
+    for ptr in exp.get("ordered_keys", []):
+        _, want = pointer(exp["body"], ptr)
+        doc = json.loads(
+            got["body_text"],
+            object_pairs_hook=lambda pairs: {"__keys__": [k for k, _ in pairs], **dict(pairs)},
+        )
+        _, node = pointer(doc, ptr)
+        if node["__keys__"] != list(want):
+            raise Fail("%s body%s: key order %s, expected %s" % (where, ptr, node["__keys__"], list(want)))
+
+
+def check_request_list(expected: List[Dict[str, Any]], log: List[Dict[str, Any]]) -> None:
+    if len(log) != len(expected):
+        raise Fail(
+            "expected %d requests, the mock received %d: %s"
+            % (len(expected), len(log), [r["method"] + " " + r["path"] for r in log])
+        )
+    i = 0
+    while i < len(expected):
+        if not expected[i].get("parallel"):
+            check_request(expected[i], log[i], "requests[%d]" % i)
+            i += 1
+            continue
+        j = i
+        while j < len(expected) and expected[j].get("parallel"):
+            j += 1
+        # Requests sent in parallel may arrive in any order: one assignment must hold.
+        reasons = []
+        for perm in itertools.permutations(range(i, j)):
+            try:
+                for k, g in zip(range(i, j), perm):
+                    check_request(expected[k], log[g], "requests[%d]" % k)
+                break
+            except Fail as exc:
+                reasons.append(str(exc))
+        else:
+            raise Fail("no order of the parallel requests matches: " + reasons[0])
+        i = j
+
+
+def check_sequence(expected: List[Dict[str, Any]], log: List[Dict[str, Any]]) -> None:
+    got = [r["method"] + " " + r["path"] for r in log]
+    if len(expected) != len(log):
+        raise Fail("request sequence: expected %d requests, the mock received %d: %s" % (len(expected), len(log), got))
+    names = ("headers", "header_patterns", "absent_headers", "body_checks", "jsonl_count", "jsonl_checks")
+    names += ("body_base64", "body_sha256", "query")
+    for i, (spec, rec) in enumerate(zip(expected, log)):
+        if rec["method"] != spec["method"]:
+            raise Fail("request sequence[%d]: expected %s, got %s" % (i, spec["method"], got[i]))
+        if "path" in spec and rec["path"] != spec["path"]:
+            raise Fail("request sequence[%d]: expected %s %s, got %s" % (i, spec["method"], spec["path"], got[i]))
+        if "path_pattern" in spec and not re.search(spec["path_pattern"], rec["path"]):
+            raise Fail("request sequence[%d]: %s does not match %s" % (i, got[i], spec["path_pattern"]))
+        if "status" in spec and rec.get("status") != spec["status"]:
+            raise Fail(
+                "request sequence[%d]: %s answered %s, expected %s" % (i, got[i], rec.get("status"), spec["status"])
+            )
+        checks = {k: v for k, v in spec.items() if k in names}
+        if checks:
+            check_request(dict(checks, method=spec["method"], any_body=True), rec, "request sequence[%d]" % i)
+
+
+def check_counts(expected: List[Dict[str, Any]], log: List[Dict[str, Any]]) -> None:
+    for spec in expected:
+        n = sum(
+            1
+            for r in log
+            if r["method"] == spec["method"]
+            and ("path" not in spec or r["path"] == spec["path"])
+            and ("path_pattern" not in spec or re.search(spec["path_pattern"], r["path"]))
+        )
+        what = "%s %s" % (spec["method"], spec.get("path") or spec.get("path_pattern"))
+        if "count" in spec and n != spec["count"]:
+            raise Fail("%s: expected %d requests, got %d" % (what, spec["count"], n))
+        in_range({k: spec[k] for k in ("min", "max") if k in spec}, n, what)
+
+
+def check_events(expected: List[Dict[str, Any]], events: List[Dict[str, Any]]) -> None:
+    if len(expected) != len(events):
+        raise Fail("session events: expected %d, got %d: %s" % (len(expected), len(events), short(events)))
+    for i, (spec, ev) in enumerate(zip(expected, events)):
+        if list(spec) != list(ev):
+            raise Fail("session events[%d]: expected %s, got %s" % (i, list(spec)[0], short(ev)))
+        key = list(spec)[0]
+        if isinstance(spec[key], dict):
+            match(spec[key], ev[key], "session events[%d].%s" % (i, key))
+        elif not same(spec[key], ev[key]):
+            raise Fail("session events[%d]: expected %s, got %s" % (i, short(spec), short(ev)))
+
+
+# --------------------------------------------------------------------------- the five kinds
+
+
+async def run_request(case: Dict[str, Any], mock: Mock, mode: str, env: pytest.MonkeyPatch) -> None:
+    session = uuid.uuid4().hex
+    extra = {"x-mock-session": session}
+    if case.get("mock"):
+        extra["x-mock-scenario"] = "request/" + case["id"]
+    client = make_client(case, mode, mock.url, extra, env)
+    try:
+        await invoke(client, mode, case["call"], {})
+    except (dn.DecisionNodeError, ValueError) as exc:
+        raise Fail("the call failed: %r" % exc) from exc
+    finally:
+        await close_client(client)
+    await asyncio.sleep(0.02)
+    log = mock.requests(session)["requests"]
+    exp = case["expect"]
+    if "request" in exp:
+        if len(log) != 1:
+            raise Fail("expected 1 request, the mock received %d" % len(log))
+        check_request(exp["request"], log[0], "request")
+    else:
+        check_request_list(exp["requests"], log)
+
+
+async def run_response(case: Dict[str, Any], mock: Mock, mode: str, env: pytest.MonkeyPatch) -> None:
+    session = uuid.uuid4().hex
+    extra = {"x-mock-session": session, "x-mock-scenario": "response/" + case["id"]}
+    client = make_client({"client": {"api_key": "dn_test_conformance"}}, mode, mock.url, extra, env)
+    try:
+        result = await invoke(client, mode, case["call"], {})
+    except (dn.DecisionNodeError, ValueError) as exc:
+        raise Fail("the call failed: %r" % exc) from exc
+    finally:
+        await close_client(client)
+    exp = case["expect"]
+    if "decision" in exp:
+        assert isinstance(result, dn.Decision)
+        match(exp["decision"], norm_decision(result), "decision")
+    elif "answer" in exp:
+        match(exp["answer"], norm_answer(result), "answer")
+    elif "models" in exp:
+        assert all(type(m) is dn.ModelInfo for m in result), "models() must return ModelInfo entries"
+        got = [
+            {"name": m.name, "description": m.description, "release_date": m.release_date, "limits": m.limits}
+            for m in result
+        ]
+        if not same(exp["models"], got):
+            raise Fail("models: expected %s, got %s" % (short(exp["models"]), short(got)))
+    elif "raw" in exp:
+        if not same(exp["raw"], result):
+            raise Fail("raw: expected %s, got %s" % (short(exp["raw"]), short(result)))
+    elif "batch" in exp:
+        assert isinstance(result, dn.Batch)
+        match(exp["batch"], result.raw, "batch")
+    elif "batch_page" in exp:
+        assert isinstance(result, dn.BatchPage)
+        match(exp["batch_page"], result.raw, "batch_page")
+    elif "batch_results" in exp:
+        check_batch_results(exp["batch_results"], result, "batch_results")
+    elif "session" in exp:
+        match(exp["session"], norm_session(result), "session")
+    elif "upload_ids" in exp:
+        if not same(exp["upload_ids"], list(result)):
+            raise Fail("upload_ids: expected %s, got %s" % (exp["upload_ids"], result))
+    else:
+        raise Fail("no expectation this harness knows: %s" % list(exp))
+
+
+async def run_error(case: Dict[str, Any], mock: Mock, mode: str, env: pytest.MonkeyPatch) -> None:
+    session = uuid.uuid4().hex
+    extra = {"x-mock-session": session, "x-mock-scenario": "error/" + case["id"]}
+    spec = case["expect"]["error"]
+    if "catch_as" in spec and spec["catch_as"] not in dn.__all__:
+        raise Fail("the package exports no error class named %s" % spec["catch_as"])
+    client = make_client(case, mode, mock.url, extra, env)
+    try:
+        await invoke(client, mode, case["call"], {})
+    except dn.DecisionNodeError as err:
+        # Caught through the exported name, as a caller writes `except DecisionNodeError`.
+        check_error(spec, err, "error")
+    except Exception as exc:  # noqa: BLE001 - anything the name does not catch fails the case
+        raise Fail("raised %s (%s), which DecisionNodeError does not catch" % (type(exc).__name__, exc)) from exc
+    else:
+        raise Fail("no error was raised")
+    finally:
+        await close_client(client)
+    log = mock.requests(session)["requests"]
+    if len(log) != 1:
+        raise Fail("expected 1 attempt with max_retries 0, got %d" % len(log))
+
+
+async def run_steps(
+    case: Dict[str, Any], client: Any, mode: str, mock: Mock, session: str, events: List[Dict[str, Any]]
+) -> None:
+    ctx: Dict[str, Any] = {}
+    for i, step in enumerate(case["steps"]):
+        where = "steps[%d]" % i
+        if "call" in step:
+            result: Any
+            try:
+                result = await invoke(client, mode, step["call"], ctx)
+            except (dn.DecisionNodeError, ValueError) as err:
+                result = err
+            if "outcome" in step:
+                check_outcome(step["outcome"], result, where + ".outcome")
+            elif isinstance(result, BaseException):
+                raise Fail("%s: the call raised %s: %s" % (where, type(result).__name__, result))
+            if "save_as" in step:
+                ctx[step["save_as"]] = result
+        elif "connect" in step:
+            try:
+                await settle(ctx[step["connect"]].connect())
+            except dn.SessionClosed as closed:
+                # A refused handshake may surface here or as the first event: both count.
+                events.append(norm_event(closed))
+        elif "send" in step:
+            args = dict(step["send"])
+            name = args.pop("session")
+            await settle(ctx[name].send(**{k: decode(v, ctx) for k, v in args.items()}))
+        elif "read" in step:
+            spec = step["read"]
+            s = ctx[spec["session"]]
+            count = spec.get("count")
+            while True:
+                ev = await settle(s.next_event(timeout=spec.get("timeout_ms", 10000) / 1000.0))
+                if ev is None:
+                    raise Fail("%s: no session event arrived in time (%d read so far)" % (where, len(events)))
+                events.append(norm_event(ev))
+                if isinstance(ev, dn.SessionClosed):
+                    break
+                if count is not None:
+                    count -= 1
+                    if count == 0:
+                        break
+        elif "end" in step:
+            try:
+                await settle(ctx[step["end"]].end())
+                events.append({"ended": True})
+            except dn.DecisionNodeError as err:
+                events.append({"end_error": {"class": type(err).__name__, "status": err.status}})
+        elif "close" in step:
+            await settle(ctx[step["close"]].close())
+        elif "mock_clock" in step:
+            mock.clock(session, step["mock_clock"])
+        elif "sleep_ms" in step:
+            await asyncio.sleep(step["sleep_ms"] / 1000.0)
+        else:
+            raise Fail("%s: unknown step %s" % (where, list(step)))
+    for value in ctx.values():
+        if isinstance(value, (dn.Session, dn.AsyncSession)):
+            await settle(value.close())
+
+
+async def run_behaviour(case: Dict[str, Any], mock: Mock, mode: str, env: pytest.MonkeyPatch) -> None:
     session = uuid.uuid4().hex
     extra = {"x-mock-session": session}
     if case.get("mock"):
         extra["x-mock-scenario"] = "behaviour/" + case["id"]
-    kwargs = client_kwargs(case, mock.url, extra, env)
     exp = case["expect"]
-    waits: Optional[List[float]] = [] if "scheduled_waits_ms" in exp else None
+    waits: List[float] = []
+    events: List[Dict[str, Any]] = []
+    client = None
+    result: Any = None
     started = time.monotonic()
-    result = invoke(mode, kwargs, case["call"], waits)
+    try:
+        # An argument error may come from the constructor (a bad base_url, timeout or
+        # max_retries) or from the call; both count, as long as nothing was sent.
+        client = make_client(case, mode, mock.url, extra, env)
+        if "scheduled_waits_ms" in exp:
+            record_waits(client, mode, waits)
+        if "steps" in case:
+            await run_steps(case, client, mode, mock, session, events)
+        else:
+            result = await invoke(client, mode, case["call"], {})
+    except (dn.DecisionNodeError, ValueError) as err:
+        result = err
+    finally:
+        await close_client(client)
     elapsed = (time.monotonic() - started) * 1000
-    time.sleep(0.05)  # let the mock finish recording dropped connections
+    await asyncio.sleep(0.05)  # let the mock finish recording dropped connections
     info = mock.requests(session)
     log = info["requests"]
     if "one_of" in exp:
@@ -514,20 +942,33 @@ def run_behaviour(case: Dict[str, Any], mock: Mock, mode: str, env: pytest.Monke
         problems = []
         for i, option in enumerate(exp["one_of"]):
             try:
-                assert len(log) == option["attempts"], "attempts: expected %d, got %d" % (option["attempts"], len(log))
+                if len(log) != option["attempts"]:
+                    raise Fail("attempts: expected %d, got %d" % (option["attempts"], len(log)))
                 check_outcome(option["outcome"], result, "one_of[%d].outcome" % i)
-            except AssertionError as exc:
+            except Fail as exc:
                 problems.append(str(exc))
             else:
                 break
         else:
             raise Fail("no option of one_of matched: %s" % "; ".join(problems))
-    else:
-        assert len(log) == exp["attempts"], "attempts: expected %d, the mock received %d" % (exp["attempts"], len(log))
+    elif "attempts" in exp and len(log) != exp["attempts"]:
+        raise Fail(
+            "attempts: expected %d, the mock received %d: %s"
+            % (exp["attempts"], len(log), [r["method"] + " " + r["path"] for r in log])
+        )
+    if "request_sequence" in exp:
+        check_sequence(exp["request_sequence"], log)
+    if "request_counts" in exp:
+        check_counts(exp["request_counts"], log)
+    if "session_events" in exp:
+        check_events(exp["session_events"], events)
+    if "pongs" in exp:
+        in_range(exp["pongs"], info["pongs"], "pongs")
     if "outcome" in exp:
         check_outcome(exp["outcome"], result, "outcome")
     if "results" in exp:
-        assert isinstance(result, list) and len(result) == len(exp["results"]), "results: %r" % (result,)
+        if not isinstance(result, list) or len(result) != len(exp["results"]):
+            raise Fail("results: %r" % (result,))
         for i, (spec, res) in enumerate(zip(exp["results"], result)):
             check_outcome(spec, res, "results[%d]" % i)
     if "gaps_ms" in exp:
@@ -539,18 +980,25 @@ def run_behaviour(case: Dict[str, Any], mock: Mock, mode: str, env: pytest.Monke
         in_range(exp["elapsed_ms"], elapsed, "elapsed (ms)")
     if "max_in_flight" in exp:
         in_range(exp["max_in_flight"], info["max_in_flight"], "max in flight")
-    if waits is not None:
-        assert len(waits) == len(exp["scheduled_waits_ms"]), "scheduled waits: %r" % (waits,)
+    if "scheduled_waits_ms" in exp:
+        if len(waits) != len(exp["scheduled_waits_ms"]):
+            raise Fail(
+                "scheduled waits: expected %d, the client scheduled %r" % (len(exp["scheduled_waits_ms"]), waits)
+            )
         for i, r in enumerate(exp["scheduled_waits_ms"]):
             in_range(r, waits[i], "scheduled wait %d (ms)" % (i + 1))
+    if "steps" in case and isinstance(result, BaseException):
+        raise Fail("the steps raised %s: %s" % (type(result).__name__, result))
     for path in exp.get("unrequested_paths", []):
         hits = mock.requests("*", path)["requests"]
-        assert not hits, "%s was requested %d time(s); it must never be requested" % (path, len(hits))
+        if hits:
+            raise Fail("%s was requested %d time(s); it must never be requested" % (path, len(hits)))
 
 
-def run_constant(case: Dict[str, Any], mock: Mock, mode: str, env: pytest.MonkeyPatch) -> None:
+async def run_constant(case: Dict[str, Any], mock: Mock, mode: str, env: pytest.MonkeyPatch) -> None:
     name = case["constant"]
-    assert hasattr(dn, name), "the package has no constant %s" % name
+    if not hasattr(dn, name) or name not in dn.__all__:
+        raise Fail("the package exports no constant %s" % name)
     value = getattr(dn, name)
     if not same(case["equals"], value):
         raise Fail("%s: expected %r, got %r" % (name, case["equals"], value))
@@ -578,4 +1026,6 @@ def test_case(
     if kind == "missing":
         pytest.fail("the conformance suite is required: set DECISIONNODE_CONFORMANCE_DIR")
     mock: Mock = request.getfixturevalue("mock")
-    RUNNERS[kind](case, mock, mode, clean_env)
+    # Each case runs in an event loop of its own; the blocking client's calls simply
+    # block it, as they would in a script.
+    asyncio.run(RUNNERS[kind](case, mock, mode, clean_env))
