@@ -367,3 +367,102 @@ class TestSessionValues:
         with pytest.raises(dn.BadRequestError):
             session._ws = object()
             session.send(image=dn.Image("f", url="https://x.example/f.png"))
+
+
+MODELS = {
+    "models": [
+        {
+            "name": "decisionnode-1.0",
+            "version": "decisionnode-1.0",
+            "alias": "decisionnode-latest",
+            "number_max_grid_values": 4096,
+            "sessions": {"enabled": True, "max_window": 16},
+        },
+        {
+            "name": "decisionnode-1.0-flash",
+            "version": "decisionnode-1.0-flash",
+            "alias": "decisionnode-flash-latest",
+            "number_max_grid_values": 0,
+            "sessions": {"enabled": False},
+        },
+    ]
+}
+
+
+class TestChecks:
+    def test_check_request_sends_and_uploads_nothing(self, mode: str) -> None:
+        h = Harness(mode, storage([]))
+        q = {"q": dn.truth("?")}
+        assert h.client.check_request("decide", state="s", questions=q, images=[dn.Image("a", data=BIG)]) is None
+        assert h.client.check_request("systemone", state="s", questions=q) is None
+        assert h.client.check_request("open_session", questions=q, window=64, ttl_seconds=3600) is None
+        assert h.client.check_request("batches.create", requests=[{"custom_id": "a", "questions": q}]) is None
+        assert (
+            h.client.check_request("batches.add", batch_id="b", requests=[{"custom_id": "a", "questions": q}]) is None
+        )
+        assert h.recorder.requests == []
+
+    def test_check_request_raises_what_sending_raises(self, mode: str) -> None:
+        h = Harness(mode, storage([]))
+        with pytest.raises(dn.ValidationError) as info:
+            h.client.check_request("decide", state="s", questions={"n": dn.number("?", min=2, max=1)})
+        assert info.value.entries[0]["type"] == "less_than_equal"  # type: ignore[index]
+        with pytest.raises(dn.BadRequestError, match="Invalid request."):
+            h.client.check_request("systemone", questions={"n": dn.number("?")})
+        with pytest.raises(dn.ValidationError):
+            h.client.check_request("open_session", questions={"a": dn.truth("?")}, window=65)
+        with pytest.raises(dn.BadRequestError, match="The call holds no requests."):
+            h.client.check_request("batches.add", batch_id="b", requests=[])
+        with pytest.raises(ValueError):
+            h.client.check_request("decide", state={"x": float("nan")}, questions={"q": dn.truth("?")})
+        with pytest.raises(ValueError):
+            h.client.check_request("models")
+        with pytest.raises(TypeError):
+            h.client.check_request("decide", questions={"q": dn.truth("?")}, colour="red")
+        assert h.recorder.requests == []
+
+    def test_check_frame(self) -> None:
+        h = Harness("sync", lambda r: json_response(200, {"session_id": "ses_1", "questions": ["abort"]}))
+        session = h.call("open_session", questions={"abort": dn.truth("?")})
+        assert session.check_frame({"battery": 0.3}, questions=["abort"]) is None
+        with pytest.raises(dn.BadRequestError, match="unknown question id 'speed'"):
+            session.check_frame("a", questions=["speed"])
+        assert session.check_frame(image=dn.Image("f", data=BIG)) is None
+        assert len(h.recorder.requests) == 1  # the open only; nothing uploaded
+
+    def test_held_limits_by_alias_and_version(self, mode: str) -> None:
+        h = Harness(mode, lambda r: json_response(200, MODELS))
+        h.call("models")
+        for model in ("decisionnode-latest", "decisionnode-1.0"):
+            with pytest.raises(dn.ValidationError) as info:
+                h.client.check_request("open_session", questions={"a": dn.truth("?")}, model=model, window=17)
+            assert info.value.entries[0]["ctx"] == {"le": 16}  # type: ignore[index]
+        for model in ("decisionnode-flash-latest", "decisionnode-1.0-flash"):
+            with pytest.raises(dn.BadRequestError, match="does not answer number questions"):
+                h.client.check_request("decide", questions={"n": dn.number("?")}, model=model)
+        # A name the held list does not state holds nothing: left to the server.
+        h.client.check_request("open_session", questions={"a": dn.truth("?")}, model="decisionnode-9", window=17)
+
+
+class TestOptions:
+    def test_upload_timeout(self) -> None:
+        assert dn.DecisionNode(api_key="k").upload_timeout == 60.0
+        assert dn.DecisionNode(api_key="k", upload_timeout=5).upload_timeout == 5.0
+        for bad in (0, -1, "5", True, float("nan")):
+            with pytest.raises(ValueError, match="upload_timeout"):
+                dn.DecisionNode(api_key="k", upload_timeout=bad)  # type: ignore[arg-type]
+
+    def test_stream_uses_the_http_clients_proxy_and_tls(self) -> None:
+        import ssl
+
+        ctx = ssl.create_default_context()
+        client = dn.DecisionNode(
+            api_key="k", http_client=httpx.Client(proxy="http://u:p%40ss@proxy.example:3128", verify=ctx)
+        )
+        options = client._stream_options("wss://api.example/v1/sessions/s/stream")
+        assert options["proxy"] == "http://u:p%40ss@proxy.example:3128"
+        assert options["ssl"] is ctx
+        plain = dn.DecisionNode(api_key="k", http_client=httpx.Client(trust_env=False))
+        options = plain._stream_options("wss://api.example/v1/sessions/s/stream")
+        assert options["proxy"] is None and isinstance(options["ssl"], ssl.SSLContext)
+        assert "ssl" not in plain._stream_options("ws://127.0.0.1:8080/v1/sessions/s/stream")

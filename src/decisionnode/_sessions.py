@@ -15,7 +15,6 @@ import inspect
 import json
 import logging
 import random
-import ssl
 import time
 from typing import (
     TYPE_CHECKING,
@@ -255,6 +254,8 @@ def _handshake_error(exc: BaseException, timeout: float) -> DecisionNodeError:
 class _SessionInfo:
     """Every field of the open response."""
 
+    _client: Any
+
     def __init__(self, raw: Dict[str, Any], headers: Mapping[str, str]) -> None:
         self.raw = raw
         self.session_id: str = raw.get("session_id", "")
@@ -284,11 +285,18 @@ class _SessionInfo:
             raise ValueError("seq must be a whole number, 0 or more, got %r" % (seq,))
         return seq
 
-    def _ssl(self, settings_ctx: Optional[ssl.SSLContext]) -> Dict[str, Any]:
-        url = self.stream_url or ""
-        if url.lower().startswith("wss:") and settings_ctx is not None:
-            return {"ssl": settings_ctx}
-        return {}
+    def check_frame(
+        self,
+        frame: Any = None,
+        image: Union[Image, Mapping[str, Any], None] = None,
+        questions: Optional[Iterable[str]] = None,
+        reset: Optional[bool] = None,
+        seq: Optional[int] = None,
+    ) -> None:
+        """Run every local check :meth:`send` would run on this frame and raise the same
+        error; send and upload nothing, and use no ``seq``. Returns ``None`` when the frame
+        would be sent. Needs no connection, and is not a coroutine on either client."""
+        self._client._check_frame(self, frame, image, questions, reset, seq)
 
     def _end_path(self) -> str:
         return "%s/%s" % (_base.SESSIONS_PATH, quote(self.session_id, safe=""))
@@ -327,7 +335,7 @@ class Session(_SessionInfo):
                 compression=None,
                 open_timeout=settings.timeout,
                 max_size=MAX_MESSAGE,
-                **self._ssl(self._client._ssl_context()),
+                **self._client._stream_options(url),
             )
         except (InvalidHandshake, OSError, TimeoutError) as exc:
             raise _handshake_error(exc, settings.timeout) from exc
@@ -447,7 +455,7 @@ class AsyncSession(_SessionInfo):
                 compression=None,
                 open_timeout=settings.timeout,
                 max_size=MAX_MESSAGE,
-                **self._ssl(self._client._ssl_context()),
+                **self._client._stream_options(url),
             )
         except (InvalidHandshake, OSError, asyncio.TimeoutError) as exc:
             raise _handshake_error(exc, settings.timeout) from exc

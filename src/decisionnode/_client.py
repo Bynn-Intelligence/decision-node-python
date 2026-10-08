@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import ssl
 import threading
 import time
@@ -191,8 +192,12 @@ class _Attempt:
         content: Optional[bytes],
         headers: Dict[str, str],
         timeout: float,
+        request: Optional[httpx.Request] = None,
     ) -> None:
         self._args = (http, method, url, content, headers, timeout)
+        # A request built whole by the caller (the storage PUT, which carries only its
+        # presigned headers) is sent as it is.
+        self._request = request
         self._done = threading.Event()
         self._abandoned = threading.Event()
         self._result: Optional[Tuple[httpx.Response, bytes]] = None
@@ -213,22 +218,25 @@ class _Attempt:
     def _work(self) -> None:
         http, method, url, content, headers, timeout = self._args
         try:
-            with http.stream(
-                method,
-                url,
-                content=content,
-                headers=headers,
-                timeout=timeout,
-                # Never followed, also on a client passed in: a redirect would send the
-                # key to another URL, possibly over plain HTTP.
-                follow_redirects=False,
-            ) as response:
+            if self._request is not None:
+                response = http.send(self._request, stream=True, follow_redirects=False)
+            else:
+                response = http.send(
+                    http.build_request(method, url, content=content, headers=headers, timeout=timeout),
+                    stream=True,
+                    # Never followed, also on a client passed in: a redirect would send the
+                    # key to another URL, possibly over plain HTTP.
+                    follow_redirects=False,
+                )
+            try:
                 chunks: List[bytes] = []
                 for chunk in response.iter_bytes():
                     if self._abandoned.is_set():
                         return
                     chunks.append(chunk)
                 self._result = (response, b"".join(chunks))
+            finally:
+                response.close()
         except BaseException as exc:  # handed to the caller's thread
             self._error = exc
         finally:
@@ -313,8 +321,16 @@ class _Common:
     _held: Dict[str, Dict[str, Any]]
 
     def _limits(self, model: Optional[str] = None) -> Dict[str, Any]:
+        """The held ``models()`` entry of the model a request names: by the entry's name,
+        else by the entry that states the name as its alias or pinned version. A name the
+        held list does not state holds nothing, and its checks are the server's."""
         name = model or self._settings.model
         entry = self._held.get(name)
+        if entry is None:
+            entry = next(
+                (e for e in self._held.values() if name in (e.get("alias"), e.get("version"))),
+                None,
+            )
         return dict(entry, model=name) if entry else {}
 
     def _hold(self, entries: Any) -> None:
@@ -362,6 +378,11 @@ class _Common:
         return self._settings.max_retries
 
     @property
+    def upload_timeout(self) -> float:
+        """Seconds one storage PUT attempt of an image may take."""
+        return self._settings.upload_timeout
+
+    @property
     def inline_threshold(self) -> int:
         """Local images of one request totalling fewer bytes than this go inline."""
         return self._settings.inline_threshold
@@ -370,17 +391,8 @@ class _Common:
         """Check a request against the API's fixed rules and plan its images, all before
         any request. Argument problems raise ``ValueError``; content the API would refuse
         raises its error class."""
-        systemone = path == _base.SYSTEMONE_PATH
-        qs = _base.check_question_map(questions)
-        imgs = _base.image_list(images)
-        if systemone:
-            qs = _base.systemone_questions(qs)
+        qs, imgs = self._check_decision(state, questions, images, model, path)
         prep = _Prepared(path, state, qs, imgs, model)
-        # The body as it will be sent, its images as placeholders so the nesting counts them.
-        probe = _base.decide_body(state, qs, [{"id": ""} for _ in imgs], model, self._settings.model)
-        limits = self._limits(probe["model"])
-        check_request(probe, systemone, limits)
-        check_images(imgs, limits)
         plan = self._plan(imgs)
         prep.plan = plan
         if plan.uploads:
@@ -390,6 +402,25 @@ class _Common:
         else:
             prep.content = self._body(prep, plan.finish({}))
         return prep
+
+    def _check_decision(
+        self, state: Any, questions: Any, images: Any, model: Optional[str], path: str, encode: bool = False
+    ) -> Tuple[Dict[str, Any], List[Any]]:
+        """Every local check of a decide-like request; the questions as sent and the images."""
+        systemone = path == _base.SYSTEMONE_PATH
+        qs = _base.check_question_map(questions)
+        imgs = _base.image_list(images)
+        if systemone:
+            qs = _base.systemone_questions(qs)
+        # The body as it will be sent, its images as placeholders so the nesting counts them.
+        probe = _base.decide_body(state, qs, [{"id": ""} for _ in imgs], model, self._settings.model)
+        limits = self._limits(probe["model"])
+        check_request(probe, systemone, limits)
+        check_images(imgs, limits)
+        if encode:
+            # A value that cannot be sent as JSON is an argument error, found now too.
+            _base.encode(probe)
+        return qs, imgs
 
     def _body(self, prep: _Prepared, wires: Sequence[Mapping[str, Any]]) -> bytes:
         return _base.encode(_base.decide_body(prep.state, prep.questions, wires, prep.model, self._settings.model))
@@ -413,13 +444,119 @@ class _Common:
                 raise ValueError("decide_many: request %d: %s" % (i, exc)) from exc
         return out
 
-    def _ssl_context(self) -> Optional[ssl.SSLContext]:
-        """The TLS settings of the HTTP client, reused for a session's stream."""
-        ctx = getattr(getattr(getattr(self._http, "_transport", None), "_pool", None), "_ssl_context", None)
-        return ctx if isinstance(ctx, ssl.SSLContext) else None
+    def _stream_options(self, url: str) -> Dict[str, Any]:
+        """The proxy and TLS settings the HTTP client would use for the stream's host,
+        for the session's WebSocket: the same proxy (or none), the same certificates."""
+        parts = urlsplit(url)
+        secure = parts.scheme.lower() == "wss"
+        http_url = ("https" if secure else "http") + url[len(parts.scheme) :]
+        try:
+            transport = self._http._transport_for_url(httpx.URL(http_url))
+        except Exception:  # noqa: BLE001 - an HTTP client without per-URL transports
+            transport = getattr(self._http, "_transport", None)
+        pool = getattr(transport, "_pool", None)
+        options: Dict[str, Any] = {"proxy": _proxy_url(pool)}
+        ctx = getattr(pool, "_ssl_context", None)
+        if secure and isinstance(ctx, ssl.SSLContext):
+            options["ssl"] = ctx
+        proxy_ctx = getattr(pool, "_proxy_ssl_context", None)
+        if options["proxy"] is not None and isinstance(proxy_ctx, ssl.SSLContext):
+            options["proxy_ssl"] = proxy_ctx
+        return options
+
+    def check_request(self, method: str, **arguments: Any) -> None:
+        """Run every local check the call ``method`` would run before sending, with the
+        same arguments, and raise the same error; send and upload nothing.
+
+        ``method`` is ``"decide"``, ``"systemone"``, ``"open_session"``,
+        ``"batches.create"`` or ``"batches.add"`` (its ``batch_id`` plays no part).
+        Limits held from an earlier ``models()`` call are checked too. Returns ``None``
+        when the request would be sent. Never makes a request, also on the async client.
+        """
+        if method in ("decide", "systemone"):
+            path = _base.DECIDE_PATH if method == "decide" else _base.SYSTEMONE_PATH
+            unknown = set(arguments) - {"state", "questions", "images", "model"}
+            if unknown:
+                raise TypeError("%s() got unexpected arguments %s" % (method, ", ".join(sorted(unknown))))
+            self._check_decision(
+                arguments.get("state", UNSET),
+                arguments.get("questions"),
+                arguments.get("images"),
+                arguments.get("model"),
+                path,
+                encode=True,
+            )
+        elif method == "open_session":
+            unknown = set(arguments) - SESSION_KEYS
+            if unknown:
+                raise TypeError("open_session() got unexpected arguments %s" % ", ".join(sorted(unknown)))
+            _session_body(
+                self,
+                arguments.get("state", UNSET),
+                arguments.get("questions"),
+                arguments.get("instructions"),
+                arguments.get("model"),
+                arguments.get("window"),
+                arguments.get("ttl_seconds"),
+            )
+        elif method in ("batches.create", "batches.add"):
+            arguments.pop("batch_id", None)
+            unknown = set(arguments) - {"requests"}
+            if unknown:
+                raise TypeError("%s() got unexpected arguments %s" % (method, ", ".join(sorted(unknown))))
+            self._check_lines(list(arguments.get("requests") or ()), method == "batches.create")
+        else:
+            raise ValueError(
+                "check_request() takes decide, systemone, open_session, batches.create or batches.add, got %r"
+                % (method,)
+            )
+
+    def _check_lines(self, items: List[Any], allow_empty: bool) -> List[Tuple[Any, Dict[str, Any], List[Any]]]:
+        """The local checks of a batch call's requests, before anything is sent or uploaded."""
+        check_lines(items, allow_empty, self._limits())
+        checked = []
+        for i, req in enumerate(items, start=1):
+            try:
+                qs = _base.check_question_map(req.get("questions"))
+                imgs = _base.image_list(req.get("images"))
+            except ValueError as exc:
+                raise ValueError("batch request %d: %s" % (i, exc)) from exc
+            model = req.get("model") or self._settings.model
+            probe: Dict[str, Any] = {"model": model, "state": req.get("state"), "questions": qs}
+            if imgs:
+                probe["images"] = [{"id": ""} for _ in imgs]
+            limits = self._limits(model)
+            check_request(probe, False, limits)
+            check_images(imgs, limits)
+            checked.append((req, qs, imgs))
+        return checked
 
     def __repr__(self) -> str:
         return "%s(%r)" % (self.__class__.__name__, self._settings)
+
+
+def _proxy_url(pool: Any) -> Optional[str]:
+    """The proxy an httpcore pool sends through, as a URL with its credentials, or ``None``."""
+    url = getattr(pool, "_proxy_url", None)
+    if url is None:
+        return None
+    try:
+        scheme = url.scheme.decode("ascii")
+        host = url.host.decode("ascii")
+    except (AttributeError, UnicodeDecodeError):
+        return None
+    if ":" in host:
+        host = "[%s]" % host
+    userinfo = ""
+    for name, value in getattr(pool, "_proxy_headers", None) or []:
+        if name.lower() == b"proxy-authorization" and value[:6].lower() == b"basic ":
+            try:
+                user, _, password = base64.b64decode(value[6:]).decode("utf-8").partition(":")
+            except (ValueError, UnicodeDecodeError):
+                continue
+            userinfo = "%s:%s@" % (quote(user, safe=""), quote(password, safe=""))
+    port = ":%d" % url.port if url.port else ""
+    return "%s://%s%s%s" % (scheme, userinfo, host, port)
 
 
 def _http2_available() -> None:
@@ -469,6 +606,8 @@ class DecisionNode(_Common):
         inline_threshold: Local images of one request that total fewer bytes than this
             go inline as base64; at or above it they are uploaded first (default
             ``DEFAULT_INLINE_THRESHOLD``, 524,288).
+        upload_timeout: Seconds one storage PUT attempt of an image may take, apart from
+            ``timeout`` (default 60). Must be above 0.
         http2: Use HTTP/2 for the API connection (needs the ``http2`` extra). Ignored
             with an ``http_client``, which keeps its own setting.
 
@@ -495,8 +634,11 @@ class DecisionNode(_Common):
         http_client: Optional[httpx.Client] = None,
         inline_threshold: Optional[int] = None,
         http2: bool = False,
+        upload_timeout: Optional[float] = _base.DEFAULT_UPLOAD_TIMEOUT,
     ) -> None:
-        self._settings = Settings(api_key, base_url, model, timeout, max_retries, headers, inline_threshold)
+        self._settings = Settings(
+            api_key, base_url, model, timeout, max_retries, headers, inline_threshold, upload_timeout
+        )
         if http_client is not None:
             _check_http_client(http_client, httpx.Client, _SYNC_TRANSPORTS, self._settings.base_url)
         elif http2:
@@ -640,12 +782,15 @@ class DecisionNode(_Common):
                 entry["url"],
                 headers=entry["headers"],
                 content=img.data,
-                extensions={"timeout": httpx.Timeout(settings.timeout).as_dict()},
+                extensions={"timeout": httpx.Timeout(settings.upload_timeout).as_dict()},
             )
             try:
-                response = self._http.send(request, follow_redirects=False)
-            except httpx.TransportError as exc:
-                error = _transport_error(exc, settings.timeout)
+                # Its own deadline, for the whole attempt: the upload_timeout.
+                response, raw = _Attempt(
+                    self._http, "PUT", entry["url"], None, {}, settings.upload_timeout, request=request
+                ).run()
+            except (httpx.TransportError, TimeoutError) as exc:
+                error = _transport_error(exc, settings.upload_timeout) if isinstance(exc, httpx.TransportError) else exc
                 _base.log_response("PUT", path, type(error).__name__, None, started, attempt)
                 retry = True
             else:
@@ -657,7 +802,7 @@ class DecisionNode(_Common):
                     return
                 if status == 403 and may_presign and self._clock() - presigned_at >= url_ttl:
                     raise UrlExpired()
-                error = storage_error(img.id, status, resp_headers, response.text)
+                error = storage_error(img.id, status, resp_headers, raw.decode("utf-8", errors="replace"))
                 retry = 500 <= status <= 599
             if not retry or attempt >= settings.max_retries:
                 raise error
@@ -1033,23 +1178,7 @@ class Batches:
 
     def _lines(self, requests: Iterable[BatchRequest], allow_empty: bool = True) -> List[bytes]:
         client = self._client
-        items = list(requests)
-        check_lines(items, allow_empty, client._limits())
-        checked = []
-        for i, req in enumerate(items, start=1):
-            try:
-                qs = _base.check_question_map(req.get("questions"))
-                imgs = _base.image_list(req.get("images"))
-            except ValueError as exc:
-                raise ValueError("batch request %d: %s" % (i, exc)) from exc
-            model = req.get("model") or client._settings.model
-            probe: Dict[str, Any] = {"model": model, "state": req.get("state"), "questions": qs}
-            if imgs:
-                probe["images"] = [{"id": ""} for _ in imgs]
-            limits = client._limits(model)
-            check_request(probe, False, limits)
-            check_images(imgs, limits)
-            checked.append((req, qs, imgs))
+        checked = client._check_lines(list(requests), allow_empty)
         out = []
         for req, qs, imgs in checked:
             plan = client._plan(imgs)
@@ -1137,8 +1266,11 @@ class AsyncDecisionNode(_Common):
         http_client: Optional[httpx.AsyncClient] = None,
         inline_threshold: Optional[int] = None,
         http2: bool = False,
+        upload_timeout: Optional[float] = _base.DEFAULT_UPLOAD_TIMEOUT,
     ) -> None:
-        self._settings = Settings(api_key, base_url, model, timeout, max_retries, headers, inline_threshold)
+        self._settings = Settings(
+            api_key, base_url, model, timeout, max_retries, headers, inline_threshold, upload_timeout
+        )
         if http_client is not None:
             _check_http_client(http_client, httpx.AsyncClient, _ASYNC_TRANSPORTS, self._settings.base_url)
         elif http2:
@@ -1295,12 +1427,19 @@ class AsyncDecisionNode(_Common):
                 entry["url"],
                 headers=entry["headers"],
                 content=img.data,
-                extensions={"timeout": httpx.Timeout(settings.timeout).as_dict()},
+                extensions={"timeout": httpx.Timeout(settings.upload_timeout).as_dict()},
             )
             try:
-                response = await self._http.send(request, follow_redirects=False)
+                # Its own deadline, for the whole attempt: the upload_timeout.
+                response = await asyncio.wait_for(
+                    self._http.send(request, follow_redirects=False), settings.upload_timeout
+                )
             except httpx.TransportError as exc:
-                error = _transport_error(exc, settings.timeout)
+                error = _transport_error(exc, settings.upload_timeout)
+                _base.log_response("PUT", path, type(error).__name__, None, started, attempt)
+                retry = True
+            except asyncio.TimeoutError:
+                error = _timeout_error(settings.upload_timeout)
                 _base.log_response("PUT", path, type(error).__name__, None, started, attempt)
                 retry = True
             else:
@@ -1627,23 +1766,7 @@ class AsyncBatches:
 
     async def _lines(self, requests: Iterable[BatchRequest], allow_empty: bool = True) -> List[bytes]:
         client = self._client
-        items = list(requests)
-        check_lines(items, allow_empty, client._limits())
-        checked = []
-        for i, req in enumerate(items, start=1):
-            try:
-                qs = _base.check_question_map(req.get("questions"))
-                imgs = _base.image_list(req.get("images"))
-            except ValueError as exc:
-                raise ValueError("batch request %d: %s" % (i, exc)) from exc
-            model = req.get("model") or client._settings.model
-            probe: Dict[str, Any] = {"model": model, "state": req.get("state"), "questions": qs}
-            if imgs:
-                probe["images"] = [{"id": ""} for _ in imgs]
-            limits = client._limits(model)
-            check_request(probe, False, limits)
-            check_images(imgs, limits)
-            checked.append((req, qs, imgs))
+        checked = client._check_lines(list(requests), allow_empty)
         out = []
         for req, qs, imgs in checked:
             plan = client._plan(imgs)

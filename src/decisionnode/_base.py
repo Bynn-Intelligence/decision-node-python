@@ -41,6 +41,9 @@ logger = logging.getLogger("decisionnode")
 DEFAULT_BASE_URL = "https://api.decisionnode.com"
 DEFAULT_MODEL = "decisionnode-latest"
 DEFAULT_TIMEOUT = 10.0
+# One storage PUT attempt of an image, apart from the API attempt's timeout: up to 10 MB
+# on a slower uplink than the API's answers need.
+DEFAULT_UPLOAD_TIMEOUT = 60.0
 DEFAULT_MAX_RETRIES = 2
 DEFAULT_CONCURRENCY = 8
 USER_AGENT = "decisionnode-python/%s" % __version__
@@ -115,14 +118,14 @@ def check_base_url(url: str) -> str:
     return url.rstrip("/")
 
 
-def check_timeout(timeout: Any) -> float:
+def check_timeout(timeout: Any, default: float = DEFAULT_TIMEOUT, name: str = "timeout") -> float:
     if timeout is None:
-        return DEFAULT_TIMEOUT
+        return default
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
-        raise ValueError("timeout must be a number of seconds above 0, got %r" % (timeout,))
+        raise ValueError("%s must be a number of seconds above 0, got %r" % (name, timeout))
     value = float(timeout)
     if not math.isfinite(value) or value <= 0:
-        raise ValueError("timeout must be a number of seconds above 0, got %r" % (timeout,))
+        raise ValueError("%s must be a number of seconds above 0, got %r" % (name, timeout))
     return value
 
 
@@ -158,6 +161,7 @@ class Settings:
         max_retries: Optional[int],
         headers: Optional[Mapping[str, str]],
         inline_threshold: Optional[int] = None,
+        upload_timeout: Optional[float] = None,
     ) -> None:
         self.api_key = api_key or os.environ.get("DECISIONNODE_API_KEY") or None
         url = base_url or os.environ.get("DECISIONNODE_BASE_URL") or DEFAULT_BASE_URL
@@ -169,6 +173,7 @@ class Settings:
         self.max_retries = check_max_retries(max_retries)
         self.custom_headers: Dict[str, str] = dict(headers or {})
         self.inline_threshold = check_inline_threshold(inline_threshold)
+        self.upload_timeout = check_timeout(upload_timeout, DEFAULT_UPLOAD_TIMEOUT, "upload_timeout")
 
     def request_headers(self, has_body: bool, content_type: str = "application/json") -> Dict[str, str]:
         headers = {
