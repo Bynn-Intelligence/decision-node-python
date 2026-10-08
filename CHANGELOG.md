@@ -7,7 +7,7 @@ All notable changes to this package are listed here. The format follows
 ## [0.1.0] - Unreleased
 
 First version. Implements version 1.1 of the specification shared by every official
-DecisionNode SDK, exported as `SPEC_VERSION`, and passes conformance suite 1.4.
+DecisionNode SDK, exported as `SPEC_VERSION`, and passes conformance suite 1.5.
 
 ### Added
 
@@ -22,10 +22,17 @@ DecisionNode SDK, exported as `SPEC_VERSION`, and passes conformance suite 1.4.
   smaller ones go inline. The client option `inline_threshold` changes the threshold.
   Uploads are remembered by the SHA-256 of their bytes and reused until 5 minutes before
   they expire; a stale one is uploaded again and the request sent once more.
-- Local checks before any request, raising the API's own error class and message: image
-  format by magic bytes, size, pixel dimensions read from the JPEG, PNG and WebP headers,
-  image count and ids, `https` URLs of at most 2,048 characters, choice options, score
-  levels, truth text, and the number grid with the API's 422 entries.
+- Every fixed rule the API documents is checked before any request, in the API's order,
+  raising its own error class, `error_type`, message and 422 entries: the 128-level
+  nesting limit; question types and shapes, option, level and truth rules and the number
+  grid (`number` is refused on `systemone`); the state's type; image count, ids, format
+  by magic bytes, size, pixel dimensions read from the JPEG, PNG and WebP headers and an
+  upload reference's media type; image URLs (`https`, at most 2,048 characters, no user
+  information, port 443, no literal private address); session `window` and
+  `ttl_seconds`; frames refused by `Session.send` with nothing written and no `seq` used;
+  batch `custom_id` rules, an empty add and `batches.list` paging. Limits a model
+  publishes are checked from the values held after a `models()` call.
+- A storage `PUT` answered `403` after its URL's lifetime is presigned again once.
 - Sessions: `open_session`, `Session` and `AsyncSession` (`connect`, `send`, `replies`,
   `next_event`, `end`, `close`), `Reply`, `FrameError`, `SessionClosed`, and `supervise`.
   `SessionLimitError`, a `RateLimitError`, for a key at its open-session limit.
@@ -82,4 +89,4 @@ DecisionNode SDK, exported as `SPEC_VERSION`, and passes conformance suite 1.4.
 - `DecisionNodeError` is exported by that name and is the base of every exception.
 - CI pins every action to a commit SHA, sets `persist-credentials: false` on every
   checkout, installs a pinned uv and checks out the conformance suite at a pinned
-  commit (suite 1.4).
+  commit (suite 1.5).

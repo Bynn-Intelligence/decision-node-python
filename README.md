@@ -412,15 +412,31 @@ A problem with an argument is found before anything is sent and raises Python's 
 sent as JSON, a file that cannot be read, a `base_url` that is not `https`, a `timeout`
 that is not above 0 or a negative `max_retries`.
 
-A request the API would refuse by its fixed rules is refused before anything is sent too,
-with the API's own error class, message and explanation, but no `status` and no
-`request_id`: a choice without options or with more than 255, a score without levels
-(`ValidationError`) or with more than 10, a truth question with neither instructions nor
-criteria, a number grid that cannot be built (`ValidationError`, with the API's
-`entries`) or a number question without instructions, and every image rule above
-(`BadRequestError`). `decide_many` and batches check every request first. Limits that
-differ by model, such as the token limit, stay the server's; they are published at
-`models()`.
+A request the API would refuse by its fixed rules is refused before anything is sent
+too, so the server never sees it. The error is the one the API would answer with (the
+same class, `error_type`, message, and for a `ValidationError` the same `entries`), but
+with no `status` and no `request_id`. The checks run in the API's order:
+
+- more than 128 objects and arrays inside each other (`BadRequestError`, "Invalid request.");
+- the shape of each question and of the state (`ValidationError`): a question that is not
+  an object or has no `type`, values that must be a string, an object or an array, a
+  choice or score without `criteria`, a score without levels, and every number grid rule;
+- the question limits (`BadRequestError`): an unknown type ("Invalid request.", also a
+  `number` question on `systemone`), a choice without options or with more than 255, a
+  score with more than 10 levels, a truth question with neither instructions nor
+  criteria, a number question without instructions;
+- every image rule above, and for a URL: `https`, at most 2,048 characters, no user
+  information, port 443, not a literal private address (`image_url_refused`);
+- for sessions, `window` (1 to 64) and `ttl_seconds` (1 to 3,600) as `ValidationError`, and
+  each frame in `Session.send`, which raises `BadRequestError` for a frame the server would
+  refuse (an unknown question id, an empty frame, an image by URL...) without writing
+  anything or using a `seq`;
+- for batches, the `custom_id` rules, an add without requests and `batches.list` paging.
+
+`decide_many` and batches check every request first. After a `models()` call the client
+also checks the limits each model publishes there (a model that serves no sessions or
+answers no number questions, its maximum window, batch size and `custom_id` length).
+Limits counted in tokens stay the server's.
 
 A failed storage upload raises `DecisionNodeError` with `error_type` `upload_failed`, the
 storage's `status`, and its error code in `reason`. Storage `PUT`s are retried on 5xx and
@@ -570,7 +586,7 @@ The tests include the DecisionNode SDK conformance suite
 (`Bynn-Intelligence/decision-node-conformance`), run with both the sync and the async
 client. Set `DECISIONNODE_CONFORMANCE_DIR` to a checkout of it, or check it out at
 `conformance/` in this repository; without it the conformance tests fail rather than
-skip. The tests pass suite 1.4; CI checks the suite out at the commit pinned in
+skip. The tests pass suite 1.5; CI checks the suite out at the commit pinned in
 `CONFORMANCE_REF` in `.github/workflows/ci.yml`, with every action pinned to a commit SHA
 and no checkout keeping its credentials.
 
