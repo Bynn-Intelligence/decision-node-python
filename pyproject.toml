@@ -10,7 +10,7 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
 authors = [{ name = "Bynn Intelligence, Inc." }]
-keywords = ["decisionnode", "decision", "classification", "api", "sdk"]
+keywords = ["decisionnode", "decision", "classification", "api", "sdk", "websocket"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
@@ -28,6 +28,14 @@ classifiers = [
 dependencies = [
   "httpx>=0.25,<1",
   "typing_extensions>=4.5",
+  # Sessions (the WebSocket stream). Pinned exactly; imported on the first session only.
+  "websockets==16.1.1",
+]
+
+[project.optional-dependencies]
+# HTTP/2 for the API connection: pip install "bynn-decisionnode[http2]".
+http2 = [
+  "h2==4.4.1",
 ]
 
 [project.urls]
@@ -36,6 +44,7 @@ Repository = "https://github.com/Bynn-Intelligence/decision-node-python"
 
 [dependency-groups]
 dev = [
+  "h2==4.4.1",
   "pytest>=8",
   "pytest-asyncio>=0.23",
   "mypy>=1.10",

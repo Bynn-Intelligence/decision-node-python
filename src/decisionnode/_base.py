@@ -28,11 +28,12 @@ from ._errors import (
     RateLimitError,
     RefusalError,
     ServerError,
+    SessionLimitError,
     ValidationError,
 )
-from ._images import Image
+from ._images import DEFAULT_INLINE_THRESHOLD, Image
 from ._questions import Question, choice, score, truth
-from ._types import parse_safety
+from ._types import LEGACY_TRUTH, parse_safety
 from ._version import __version__
 
 logger = logging.getLogger("decisionnode")
@@ -52,7 +53,24 @@ MAX_BACKOFF = 8.0
 MAX_RETRY_AFTER = 60.0
 
 DECIDE_PATH = "/v1/decide"
+SYSTEMONE_PATH = "/v1/systemone"
 MODELS_PATH = "/v1/models"
+UPLOADS_PATH = "/v1/uploads"
+SESSIONS_PATH = "/v1/sessions"
+BATCHES_PATH = "/v1/batches"
+
+# Retry policies. DEFAULT: 408, 429, 5xx, timeouts and dropped connections. MUTATION
+# (batch create, add and finalize): only 429 and 529, which the API answers before
+# applying anything; never after a timeout, a lost answer or another 5xx, since a repeat
+# could create a second draft. SESSION_OPEN: as DEFAULT, except that a 429
+# session_limit_exceeded is never retried.
+DEFAULT = "default"
+MUTATION = "mutation"
+SESSION_OPEN = "session_open"
+
+# A 400 for an upload the client placed in the request: it uploads again and sends the
+# request once more.
+STALE_UPLOAD = frozenset({"upload_expired", "upload_consumed", "upload_not_found", "upload_incomplete"})
 
 ImageInput = Union[Image, Mapping[str, Any]]
 
@@ -116,6 +134,14 @@ def check_max_retries(max_retries: Any) -> int:
     return int(max_retries)
 
 
+def check_inline_threshold(value: Any) -> int:
+    if value is None:
+        return DEFAULT_INLINE_THRESHOLD
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("inline_threshold must be a whole number of bytes, 0 or more, got %r" % (value,))
+    return int(value)
+
+
 class Settings:
     """The resolved client settings: an explicit argument, then the environment, then the default.
 
@@ -131,6 +157,7 @@ class Settings:
         timeout: Optional[float],
         max_retries: Optional[int],
         headers: Optional[Mapping[str, str]],
+        inline_threshold: Optional[int] = None,
     ) -> None:
         self.api_key = api_key or os.environ.get("DECISIONNODE_API_KEY") or None
         url = base_url or os.environ.get("DECISIONNODE_BASE_URL") or DEFAULT_BASE_URL
@@ -141,17 +168,27 @@ class Settings:
         self.timeout = check_timeout(timeout)
         self.max_retries = check_max_retries(max_retries)
         self.custom_headers: Dict[str, str] = dict(headers or {})
+        self.inline_threshold = check_inline_threshold(inline_threshold)
 
-    def request_headers(self, has_body: bool) -> Dict[str, str]:
-        if not self.api_key:
-            raise AuthenticationError("no API key: pass api_key to the client or set DECISIONNODE_API_KEY")
+    def request_headers(self, has_body: bool, content_type: str = "application/json") -> Dict[str, str]:
         headers = {
-            "Authorization": "Bearer %s" % self.api_key,
+            "Authorization": "Bearer %s" % self.require_key(),
             "User-Agent": USER_AGENT,
             "Accept": "application/json",
         }
         if has_body:
-            headers["Content-Type"] = "application/json"
+            headers["Content-Type"] = content_type
+        headers.update(self.custom_headers)
+        return headers
+
+    def require_key(self) -> str:
+        if not self.api_key:
+            raise AuthenticationError("no API key: pass api_key to the client or set DECISIONNODE_API_KEY")
+        return self.api_key
+
+    def stream_headers(self) -> Dict[str, str]:
+        """The headers of a session's WebSocket handshake: the key, never in the URL."""
+        headers = {"Authorization": "Bearer %s" % self.require_key()}
         headers.update(self.custom_headers)
         return headers
 
@@ -178,38 +215,92 @@ def encode(body: Any) -> bytes:
         raise ValueError("the request cannot be sent as JSON: %s" % exc) from exc
 
 
-def decide_body(
-    state: Any,
-    questions: Optional[Mapping[str, Question]],
-    images: Optional[Sequence[ImageInput]],
-    model: Optional[str],
-    default_model: str,
-) -> Dict[str, Any]:
+def check_question_map(questions: Any) -> Dict[str, Any]:
+    """The question map with string ids, or ``ValueError`` for an argument that is not one."""
     if questions is None or not isinstance(questions, Mapping):
         raise ValueError("questions must be a mapping of question id to question")
     if len(questions) == 0:
         raise ValueError("questions must hold at least one question")
+    out: Dict[str, Any] = {}
+    for qid, q in questions.items():
+        if not isinstance(q, Mapping):
+            raise ValueError(
+                "question %r must be a question built with truth(), choice(), score() or number(), or a mapping"
+                % (qid,)
+            )
+        out[str(qid)] = q
+    return out
+
+
+def image_list(images: Any) -> List[Any]:
+    """The images argument as a list, or ``ValueError``."""
+    if not images:
+        return []
+    if isinstance(images, (Image, Mapping)):
+        return [images]
+    if isinstance(images, (str, bytes)):
+        raise ValueError("images must be a list of Image objects or wire-form mappings")
+    out = list(images)
+    for img in out:
+        if not isinstance(img, (Image, Mapping)):
+            raise ValueError("images must be Image objects or wire-form mappings, got %r" % (img,))
+    return out
+
+
+def decide_body(
+    state: Any,
+    questions: Mapping[str, Any],
+    wires: Sequence[Mapping[str, Any]],
+    model: Optional[str],
+    default_model: str,
+) -> Dict[str, Any]:
     body: Dict[str, Any] = {
         "model": model or default_model,
         "state": "" if state is None or state is UNSET else state,
-        "questions": {str(qid): q for qid, q in questions.items()},
+        "questions": dict(questions),
     }
-    if images:
-        if isinstance(images, (Image, Mapping)):
-            images = [images]
-        out = []
-        for img in images:
-            if isinstance(img, Image):
-                out.append(img.to_dict())
-            elif isinstance(img, Mapping):
-                out.append(dict(img))
-            else:
-                raise ValueError("images must be Image objects or wire-form mappings, got %r" % (img,))
-        body["images"] = out
+    if wires:
+        body["images"] = list(wires)
     return body
 
 
+def systemone_questions(questions: Mapping[str, Any]) -> Dict[str, Any]:
+    """The questions as /v1/systemone takes them: a ``truth`` question under that path's
+    wire name for the type; every other question as given."""
+    out: Dict[str, Any] = {}
+    for qid, q in questions.items():
+        if isinstance(q, Mapping) and q.get("type") == "truth":
+            q = dict(q)
+            q["type"] = LEGACY_TRUTH
+        out[qid] = q
+    return out
+
+
 DECIDE_KEYS = frozenset({"state", "questions", "images", "model"})
+
+
+def should_retry(policy: str, status: int, error: DecisionNodeError) -> bool:
+    if policy == MUTATION:
+        return status in (429, 529)
+    if policy == SESSION_OPEN and isinstance(error, SessionLimitError):
+        return False
+    return status in RETRY_STATUSES
+
+
+def parse_time(text: Any) -> Optional[float]:
+    """An ISO 8601 UTC time such as ``2026-10-06T09:35:00Z`` as a Unix time, or ``None``."""
+    if not isinstance(text, str) or not text:
+        return None
+    value = text.strip()
+    if value.endswith(("Z", "z")):
+        value = value[:-1] + "+00:00"
+    try:
+        when = datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.timezone.utc)
+    return when.timestamp()
 
 
 def check_many(requests: Iterable[Mapping[str, Any]], concurrency: int) -> List[Mapping[str, Any]]:
@@ -261,11 +352,11 @@ def retry_after_seconds(headers: Mapping[str, str]) -> Optional[float]:
 
     ``retry-after-ms`` first, then ``Retry-After`` as seconds or as an HTTP date.
     """
-    wait = _requested_wait(headers)
+    wait = requested_wait(headers)
     return None if wait is None else min(wait, MAX_RETRY_AFTER)
 
 
-def _requested_wait(headers: Mapping[str, str]) -> Optional[float]:
+def requested_wait(headers: Mapping[str, str]) -> Optional[float]:
     ms = headers.get("retry-after-ms")
     if ms is not None:
         try:
@@ -358,6 +449,8 @@ def make_error(status: int, headers: Mapping[str, str], text: str) -> DecisionNo
     if status == 422:
         return ValidationError(message, entries=entries, **kwargs)
     if status == 429:
+        if error_type == "session_limit_exceeded":
+            return SessionLimitError(message, retry_after=retry_after_seconds(headers), **kwargs)
         return RateLimitError(message, retry_after=retry_after_seconds(headers), **kwargs)
     if status == 529:
         return OverloadedError(message, retry_after=retry_after_seconds(headers), **kwargs)

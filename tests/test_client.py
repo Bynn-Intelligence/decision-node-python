@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import email.utils
 import json
 import logging
 import threading
 import time
+from pathlib import Path
 from typing import Any, List
 
 import httpx
@@ -18,6 +20,7 @@ import decisionnode as dn
 from decisionnode import _base
 
 MODES = ["sync", "async"]
+PNG = (Path(__file__).parent / "fixtures" / "rgb-3x5.png").read_bytes()
 
 
 class Harness:
@@ -90,7 +93,8 @@ def test_empty_model_per_call_uses_client_model(mode: str) -> None:
 
 
 def test_spec_version() -> None:
-    assert dn.SPEC_VERSION == "1.0"
+    assert dn.SPEC_VERSION == "1.1"
+    assert dn.DEFAULT_INLINE_THRESHOLD == 524_288
 
 
 @pytest.mark.parametrize("cls", [dn.DecisionNode, dn.AsyncDecisionNode])
@@ -172,10 +176,10 @@ def test_images_in_body(mode: str) -> None:
     h.decide(
         "s",
         {"q": dn.truth("?")},
-        images=[dn.Image("a", data=b"abc", media_type="image/png"), {"id": "b", "url": "https://x.example/b.png"}],
+        images=[dn.Image("a", data=PNG, media_type="image/png"), {"id": "b", "url": "https://x.example/b.png"}],
     )
     assert rec.body()["images"] == [
-        {"id": "a", "media_type": "image/png", "data": "YWJj"},
+        {"id": "a", "media_type": "image/png", "data": base64.b64encode(PNG).decode()},
         {"id": "b", "url": "https://x.example/b.png"},
     ]
 
