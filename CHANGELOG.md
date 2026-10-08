@@ -7,7 +7,7 @@ All notable changes to this package are listed here. The format follows
 ## [0.1.0] - Unreleased
 
 First version. Implements version 1.1 of the specification shared by every official
-DecisionNode SDK, exported as `SPEC_VERSION`, and passes conformance suite 1.5.
+DecisionNode SDK, exported as `SPEC_VERSION`, and passes conformance suite 1.6.
 
 ### Added
 
@@ -31,7 +31,14 @@ DecisionNode SDK, exported as `SPEC_VERSION`, and passes conformance suite 1.5.
   information, port 443, no literal private address); session `window` and
   `ttl_seconds`; frames refused by `Session.send` with nothing written and no `seq` used;
   batch `custom_id` rules, an empty add and `batches.list` paging. Limits a model
-  publishes are checked from the values held after a `models()` call.
+  publishes are checked from the values held after a `models()` call, found by the
+  model's name or by the alias or pinned version an entry states.
+- `check_request(method, **arguments)` and `Session.check_frame(...)` run every local
+  check a call would run, raise the same error, and send and upload nothing.
+- `upload_timeout` (default 60 seconds): each storage `PUT` attempt of an image has its
+  own deadline, apart from `timeout`.
+- A session's stream goes through the HTTP client's proxy and uses its TLS settings.
+- Batch results are read from the network line by line, the whole file.
 - A storage `PUT` answered `403` after its URL's lifetime is presigned again once.
 - Sessions: `open_session`, `Session` and `AsyncSession` (`connect`, `send`, `replies`,
   `next_event`, `end`, `close`), `Reply`, `FrameError`, `SessionClosed`, and `supervise`.
@@ -89,4 +96,4 @@ DecisionNode SDK, exported as `SPEC_VERSION`, and passes conformance suite 1.5.
 - `DecisionNodeError` is exported by that name and is the base of every exception.
 - CI pins every action to a commit SHA, sets `persist-credentials: false` on every
   checkout, installs a pinned uv and checks out the conformance suite at a pinned
-  commit (suite 1.5).
+  commit (suite 1.6).

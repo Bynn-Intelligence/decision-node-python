@@ -267,7 +267,7 @@ with dn.open_session(
 | Call | |
 |---|---|
 | `open_session(state, questions, instructions, model, window, ttl_seconds)` | `POST /v1/sessions`. Returns a `Session` with every field of the answer (`session_id`, `model`, `window`, `ttl_seconds`, `expires_at`, `limits`, `questions`, `usage`, `answers` to the questions on the state alone, `safety`) |
-| `Session.connect()` | Opens the stream. Your key goes in the handshake's `Authorization` header, never in the URL; your custom headers go too |
+| `Session.connect()` | Opens the stream. Your key goes in the handshake's `Authorization` header, never in the URL; your custom headers go too. The stream goes through the same proxy and uses the same certificates as the HTTP client |
 | `Session.send(frame, image, questions, reset, seq)` | Sends one frame and returns its `seq`, counted from 1 unless you give one. Never waits for the answer. `image` is one `Image` (not a URL), sent inline or by `upload_id` as above |
 | `Session.replies()` | Yields `Reply` and `FrameError` values as they come, then the `SessionClosed` |
 | `Session.next_event(timeout)` | The next event, or `None` after `timeout` seconds |
@@ -435,8 +435,24 @@ with no `status` and no `request_id`. The checks run in the API's order:
 
 `decide_many` and batches check every request first. After a `models()` call the client
 also checks the limits each model publishes there (a model that serves no sessions or
-answers no number questions, its maximum window, batch size and `custom_id` length).
-Limits counted in tokens stay the server's.
+answers no number questions, its maximum window, batch size and `custom_id` length),
+for a model named by its name, its alias or its pinned version. Limits counted in tokens
+stay the server's.
+
+### Check without sending
+
+```python
+dn.check_request("decide", state=ticket, questions=questions, images=images)
+dn.check_request("open_session", questions=questions, window=8)
+dn.check_request("batches.create", requests=requests)
+session.check_frame({"battery": 0.31}, questions=["abort"])
+```
+
+`check_request(method, **arguments)` runs every check the call `method` (`decide`,
+`systemone`, `open_session`, `batches.create` or `batches.add`) would run before sending,
+with the same arguments, and raises the same error; it sends nothing, uploads nothing and
+returns `None` when the request would go out. `Session.check_frame(...)` does the same for
+a frame. Neither makes a request, so neither is a coroutine on the async client.
 
 A failed storage upload raises `DecisionNodeError` with `error_type` `upload_failed`, the
 storage's `status`, and its error code in `reason`. Storage `PUT`s are retried on 5xx and
@@ -474,9 +490,11 @@ The client does not close an `http_client` you pass in.
 
 Each attempt times out after 10 seconds. The timeout covers the whole attempt, from
 sending the request to the last byte of the response body, so a server that answers
-slowly a little at a time cannot hold a call longer than that. Two transfers that can be
-large are bounded per network step instead: a storage `PUT` of an image, and the batch
-results, which are read as you iterate them. A failed request is retried twice on 408, 429,
+slowly a little at a time cannot hold a call longer than that. A storage `PUT` of an
+image has its own deadline for the whole attempt, `upload_timeout` (60 seconds by
+default), since up to 10 MB may need longer than an answer does. Batch results are read
+from the network line by line as you iterate them, each read bounded by the timeout, so a
+file of any size is read whole. A failed request is retried twice on 408, 429,
 any 5xx (529 included), a timeout or a dropped connection. The wait is `retry-after-ms`
 when the server sends it, else `Retry-After` in seconds or as an HTTP date, capped at
 60 seconds either way; without either, an exponential backoff from 0.5 seconds with
@@ -530,6 +548,7 @@ d.raw["safety"]  # {"checked": True, "harm": 0.031, "self_harm": 0.004, "flagged
 | `headers` | | extra headers sent on every request |
 | `http_client` | | an `httpx.Client` (`httpx.AsyncClient` for the async client), for proxies or custom certificates; see "Your own HTTP client" |
 | `inline_threshold` | | `524288` bytes (`DEFAULT_INLINE_THRESHOLD`); local images of a request below it go inline, at or above it they are uploaded |
+| `upload_timeout` | | `60.0` seconds for one storage `PUT` attempt of an image; must be above 0 |
 | `http2` | | `False`; `True` uses HTTP/2 for the API connection (`pip install "bynn-decisionnode[http2]"`) |
 
 An argument wins over the environment, and the environment over the default. An empty
@@ -586,7 +605,7 @@ The tests include the DecisionNode SDK conformance suite
 (`Bynn-Intelligence/decision-node-conformance`), run with both the sync and the async
 client. Set `DECISIONNODE_CONFORMANCE_DIR` to a checkout of it, or check it out at
 `conformance/` in this repository; without it the conformance tests fail rather than
-skip. The tests pass suite 1.5; CI checks the suite out at the commit pinned in
+skip. The tests pass suite 1.6; CI checks the suite out at the commit pinned in
 `CONFORMANCE_REF` in `.github/workflows/ci.yml`, with every action pinned to a commit SHA
 and no checkout keeping its credentials.
 
