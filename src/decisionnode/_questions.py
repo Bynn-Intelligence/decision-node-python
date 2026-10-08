@@ -16,11 +16,15 @@ __all__ = [
     "ChoiceQuestion",
     "ScoreQuestion",
     "NumberQuestion",
+    "PointQuestion",
+    "BoxQuestion",
     "Question",
     "truth",
     "choice",
     "score",
     "number",
+    "point",
+    "box",
 ]
 
 
@@ -58,7 +62,27 @@ class NumberQuestion(TypedDict):
     step: NotRequired[Union[int, float]]
 
 
-Question = Union[TruthQuestion, ChoiceQuestion, ScoreQuestion, NumberQuestion, Mapping[str, Any]]
+class PointQuestion(TypedDict):
+    """Point to one spot in an image: ``x`` and ``y``."""
+
+    type: Literal["point"]
+    instructions: NotRequired[Any]
+    image: NotRequired[str]
+    units: NotRequired[Literal["pixels", "normalized"]]
+
+
+class BoxQuestion(TypedDict):
+    """Draw a box around something in an image: ``x1``, ``y1``, ``x2`` and ``y2``."""
+
+    type: Literal["box"]
+    instructions: NotRequired[Any]
+    image: NotRequired[str]
+    units: NotRequired[Literal["pixels", "normalized"]]
+
+
+Question = Union[
+    TruthQuestion, ChoiceQuestion, ScoreQuestion, NumberQuestion, PointQuestion, BoxQuestion, Mapping[str, Any]
+]
 """A question built by :func:`truth`, :func:`choice`, :func:`score` or :func:`number`, or a wire-form mapping."""
 
 
@@ -165,3 +189,47 @@ def number(
         if value is not None:
             question[name] = value
     return question  # type: ignore[return-value]
+
+
+def point(instructions: Any = None, image: Optional[str] = None, units: Optional[str] = None) -> PointQuestion:
+    """A ``point`` question: where in the image is it? Answered with ``x`` and ``y``.
+
+    Args:
+        instructions: What to find: a phrase, a description with conditions, or a
+            question. Required by the API.
+        image: The id of the image to look in. Required when the request has two or
+            more images.
+        units: ``"pixels"`` (the API's default) or ``"normalized"`` (fractions of the
+            width and height, from 0 to 1).
+
+    >>> point("Point to the yellow package closest to the robot arm.")
+    {'type': 'point', 'instructions': 'Point to the yellow package closest to the robot arm.'}
+    """
+    return _place("point", instructions, image, units)  # type: ignore[return-value]
+
+
+def box(instructions: Any = None, image: Optional[str] = None, units: Optional[str] = None) -> BoxQuestion:
+    """A ``box`` question: draw a box around it. Answered with the top-left corner
+    (``x1``, ``y1``) and the bottom-right corner (``x2``, ``y2``).
+
+    Args:
+        instructions: What to find. Required by the API.
+        image: The id of the image to look in. Required when the request has two or
+            more images.
+        units: ``"pixels"`` (the API's default) or ``"normalized"``.
+
+    >>> box("Draw a box around the damaged package.", image="belt")
+    {'type': 'box', 'instructions': 'Draw a box around the damaged package.', 'image': 'belt'}
+    """
+    return _place("box", instructions, image, units)  # type: ignore[return-value]
+
+
+def _place(kind: str, instructions: Any, image: Optional[str], units: Optional[str]) -> Dict[str, Any]:
+    question: Dict[str, Any] = {"type": kind}
+    if instructions is not None:
+        question["instructions"] = instructions
+    if image is not None:
+        question["image"] = image
+    if units is not None:
+        question["units"] = units
+    return question

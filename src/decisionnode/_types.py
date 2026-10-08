@@ -16,6 +16,8 @@ __all__ = [
     "ChoiceAnswer",
     "ScoreAnswer",
     "NumberAnswer",
+    "PointAnswer",
+    "BoxAnswer",
     "UnknownAnswer",
     "AnyAnswer",
     "Usage",
@@ -105,12 +107,67 @@ class NumberAnswer(Answer):
 
 
 @dataclass(frozen=True)
+class PointAnswer(Answer):
+    """The answer to a ``point`` question.
+
+    Attributes:
+        x: The spot's distance from the image's left edge.
+        y: The spot's distance from the image's top edge. Both are whole pixels, or
+            fractions of the width and height when the question asked for
+            ``normalized`` units.
+        present: The probability that what the instructions describe is in the image at
+            all. Under a low ``present`` the spot is only the best guess.
+        confidence: The probability that the spot lies on the thing, if it is there.
+        image: The id of the image looked in.
+        width: That image's width in pixels.
+        height: That image's height in pixels.
+    """
+
+    x: Union[int, float]
+    y: Union[int, float]
+    present: float
+    confidence: float
+    image: str
+    width: int
+    height: int
+
+
+@dataclass(frozen=True)
+class BoxAnswer(Answer):
+    """The answer to a ``box`` question.
+
+    Attributes:
+        x1: The left edge of the box.
+        y1: The top edge.
+        x2: The right edge.
+        y2: The bottom edge. In the same units as a point.
+        present: The probability that what the instructions describe is in the image at
+            all.
+        confidence: The probability that the box overlaps the true box by at least half
+            (intersection over union of 0.5 or more), if the thing is there.
+        image: The id of the image looked in.
+        width: That image's width in pixels.
+        height: That image's height in pixels.
+    """
+
+    x1: Union[int, float]
+    y1: Union[int, float]
+    x2: Union[int, float]
+    y2: Union[int, float]
+    present: float
+    confidence: float
+    image: str
+    width: int
+    height: int
+
+
+@dataclass(frozen=True)
 class UnknownAnswer(Answer):
     """An answer of a type this version of the SDK does not know, or of a known type whose
     fields are missing or of the wrong type. Read its fields from ``raw``."""
 
 
-AnyAnswer = Union[TruthAnswer, ChoiceAnswer, ScoreAnswer, NumberAnswer, UnknownAnswer]
+AnyAnswer = Union[TruthAnswer, ChoiceAnswer, ScoreAnswer, NumberAnswer, PointAnswer, BoxAnswer, UnknownAnswer]
 
 
 @dataclass(frozen=True)
@@ -290,6 +347,32 @@ def parse_answer(raw: Any) -> AnyAnswer:
                 expected=_number(raw, "expected"),
                 confidence=_number(raw, "confidence"),
                 probabilities=_number_values(_mapping(raw, "probabilities")),
+            )
+        if kind == "point":
+            return PointAnswer(
+                type=kind,
+                raw=raw,
+                x=_number(raw, "x"),
+                y=_number(raw, "y"),
+                present=_number(raw, "present"),
+                confidence=_number(raw, "confidence"),
+                image=_string(raw, "image"),
+                width=_number(raw, "width"),  # type: ignore[arg-type]
+                height=_number(raw, "height"),  # type: ignore[arg-type]
+            )
+        if kind == "box":
+            return BoxAnswer(
+                type=kind,
+                raw=raw,
+                x1=_number(raw, "x1"),
+                y1=_number(raw, "y1"),
+                x2=_number(raw, "x2"),
+                y2=_number(raw, "y2"),
+                present=_number(raw, "present"),
+                confidence=_number(raw, "confidence"),
+                image=_string(raw, "image"),
+                width=_number(raw, "width"),  # type: ignore[arg-type]
+                height=_number(raw, "height"),  # type: ignore[arg-type]
             )
         if kind == "choice":
             return ChoiceAnswer(

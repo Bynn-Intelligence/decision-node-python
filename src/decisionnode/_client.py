@@ -437,7 +437,7 @@ class _Common:
             state, qs, [{"id": ""} for _ in imgs], model, self._settings.model, [{"id": ""} for _ in vids]
         )
         limits = self._limits(probe["model"])
-        check_request(probe, systemone, limits)
+        check_request(probe, systemone, limits, image_ids=_image_ids(imgs))
         check_images(imgs, limits)
         check_videos(vids, imgs)
         if encode:
@@ -559,7 +559,7 @@ class _Common:
             if vids:
                 probe["videos"] = [{"id": ""} for _ in vids]
             limits = self._limits(model)
-            check_request(probe, False, limits)
+            check_request(probe, False, limits, image_ids=_image_ids(imgs))
             check_images(imgs, limits)
             check_videos(vids, imgs)
             checked.append((req, qs, imgs, vids))
@@ -567,6 +567,11 @@ class _Common:
 
     def __repr__(self) -> str:
         return "%s(%r)" % (self.__class__.__name__, self._settings)
+
+
+def _image_ids(images: Sequence[Any]) -> List[Any]:
+    """The ids of a request's images as given, for the point and box rules."""
+    return [img.id if isinstance(img, Image) else img.get("id") for img in images]
 
 
 def _proxy_url(pool: Any) -> Optional[str]:

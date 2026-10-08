@@ -206,6 +206,12 @@ JSON_TYPES: Dict[str, Callable[[Any], bool]] = {
 
 
 def norm_answer(a: Any) -> Dict[str, Any]:
+    if isinstance(a, dn.PointAnswer):
+        fields = ("x", "y", "present", "confidence", "image", "width", "height")
+        return dict({"kind": "point", "type": a.type}, **{n: getattr(a, n) for n in fields})
+    if isinstance(a, dn.BoxAnswer):
+        fields = ("x1", "y1", "x2", "y2", "present", "confidence", "image", "width", "height")
+        return dict({"kind": "box", "type": a.type}, **{n: getattr(a, n) for n in fields})
     if isinstance(a, dn.NumberAnswer):
         return {
             "kind": "number",
@@ -406,6 +412,10 @@ def decode(value: Any, ctx: Dict[str, Any]) -> Any:
             return dn.score(args.get("instructions"), args["levels"])
         if key == "$number":
             return dn.number(args.get("instructions"), args.get("min"), args.get("max"), args.get("step"))
+        if key == "$point":
+            return dn.point(args.get("instructions"), args.get("image"), args.get("units"))
+        if key == "$box":
+            return dn.box(args.get("instructions"), args.get("image"), args.get("units"))
         if key == "$video":
             args = {k: decode(v, ctx) for k, v in args.items()}
             extra = {k: args[k] for k in ("fps", "start", "end") if k in args}

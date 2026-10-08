@@ -59,7 +59,7 @@ asyncio.run(main())
 
 ## Questions
 
-Four question types. Each builder returns the question in its wire form, and a plain
+Six question types. Each builder returns the question in its wire form, and a plain
 `dict` in that form is accepted anywhere a builder is.
 
 | Builder | Asks | Answer |
@@ -68,6 +68,8 @@ Four question types. Each builder returns the question in its wire form, and a p
 | `choice(instructions, options)` | Which one? `options` is a dict of name to description, or a list of names | `ChoiceAnswer.choice`, `.confidence`, `.probabilities` (by option name) |
 | `score(instructions, levels)` | Where on this scale? `levels` are ordered low to high | `ScoreAnswer.score` (expected level index), `.confidence`, `.probabilities` and `.legend` (by level index, as `int`) |
 | `number(instructions, min, max, step)` | Which number? A value of the grid `min`, `min + step`, ... up to `max` (defaults 0, 255 and 1) | `NumberAnswer.number` (the most likely value), `.expected` (the weighted mean), `.confidence`, `.probabilities` (by the value as the API writes it: `"7"`, `"3.5"`) |
+| `point(instructions, image=None, units=None)` | Where in the image? (below) | `PointAnswer.x`, `.y`, `.present`, `.confidence`, `.image`, `.width`, `.height` |
+| `box(instructions, image=None, units=None)` | Draw a box around it (below) | `BoxAnswer.x1`, `.y1`, `.x2`, `.y2`, `.present`, `.confidence`, `.image`, `.width`, `.height` |
 
 `state`, `instructions`, option descriptions and levels take a string or any
 JSON-serialisable value. Question ids are any string and come back unchanged; read
@@ -236,11 +238,52 @@ d = dn.decide(state="...", images=[Image("front", upload_id=upload_ids[0])], que
 `upload(images)` uploads whatever the size and returns one `upload_id` per image. An
 upload can be used for one hour by any key of your workspace.
 
+## Points and boxes
+
+A `point` question finds one spot in an image; a `box` question draws a rectangle around
+something. They mix freely with the other types in one request, and several of them on
+the same image share one read of it.
+
+```python
+from decisionnode import Image, box, point, truth
+
+d = dn.decide(
+    images=[Image("belt", url="https://files.example.com/line-3/cam-2/0917.jpg")],
+    questions={
+        "pick": point("Point to the yellow package closest to the robot arm."),
+        "damage": box("Draw a box around the damaged package.", image="belt"),
+        "any_damage": truth("Is any package on the belt damaged?"),
+    },
+)
+
+pick = d["pick"]
+if pick.present > 0.8 and pick.confidence > 0.7:
+    robot.pick(pick.x, pick.y)
+else:
+    send_to_operator()
+```
+
+| Field | |
+|---|---|
+| `x`, `y` | The point, from the top-left corner of the image: `x` to the right, `y` down. Whole pixels by default; with `units="normalized"`, fractions of the width and height with 4 decimals |
+| `x1`, `y1`, `x2`, `y2` | The box: its top-left corner (`x1`, `y1`) and bottom-right corner (`x2`, `y2`), in the same units |
+| `present` | The probability that what you asked for is in the image at all. Under a low value the place is only the best guess |
+| `confidence` | The probability that the place is right, if the thing is there: for a point, that it lies on the thing; for a box, that it overlaps the true box by at least half (intersection over union of 0.5 or more) |
+| `image`, `width`, `height` | The image the answer refers to and its size in pixels, so you can draw or convert the answer without another lookup |
+
+Every field is always there. When several things match, the answer is the best match;
+say which one you mean in the instructions ("the leftmost yellow package").
+
+A point or box question needs an image in the request. With two or more images, name the
+one to look in with `image`. These rules and `units` (`"pixels"` or `"normalized"`) are
+checked before anything is sent, and a fault raises `ValidationError` as the API would.
+`decide`, `decide_many` and batch requests take point and box questions; `systemone`
+does not.
+
 ## Videos
 
-Video is available when the API enables it. A video is sent as the frames you sampled,
-each with its time in seconds, and the questions see them as one video, in order and with
-their times. Only frames are sent: no video file, no video URL and no sound go to the API.
+A video is sent as the frames you sampled, each with its time in seconds, and the
+questions see them as one video, in order and with their times. Only frames are sent: no video file, no video URL and no sound go to the API.
 
 ```python
 from decisionnode import VideoFrame, Video
@@ -645,7 +688,7 @@ The tests include the DecisionNode SDK conformance suite
 (`Bynn-Intelligence/decision-node-conformance`), run with both the sync and the async
 client. Set `DECISIONNODE_CONFORMANCE_DIR` to a checkout of it, or check it out at
 `conformance/` in this repository; without it the conformance tests fail rather than
-skip. The tests pass suite 1.7; CI checks the suite out at the commit pinned in
+skip. The tests pass suite 1.8; CI checks the suite out at the commit pinned in
 `CONFORMANCE_REF` in `.github/workflows/ci.yml`, with every action pinned to a commit SHA
 and no checkout keeping its credentials.
 

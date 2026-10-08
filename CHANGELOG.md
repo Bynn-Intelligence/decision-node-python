@@ -7,7 +7,7 @@ All notable changes to this package are listed here. The format follows
 ## [0.2.0] - Unreleased
 
 Implements version 1.2 of the SDK specification (`SPEC_VERSION` is `"1.2"`) and passes
-conformance suite 1.7.
+conformance suite 1.8.
 
 ### Added
 
@@ -22,6 +22,12 @@ conformance suite 1.7.
   message. VideoFrame limits are the API's.
 - `Decision.usage.video_frames`, `Decision.usage.video_seconds` (`None` when absent) and
   `Decision.warnings` (an empty list when absent).
+- The `point` and `box` question types: the `point(instructions, image, units)` and
+  `box(instructions, image, units)` builders, and `PointAnswer` (`x`, `y`) and `BoxAnswer`
+  (`x1`, `y1`, `x2`, `y2`), each with `present`, `confidence`, `image`, `width` and
+  `height`. A request with one needs an image, and `image` names one of the request's
+  images (required with two or more); with `units` these are checked before anything is
+  sent and raise `ValidationError` with the API's entries.
 
 ### Changed
 

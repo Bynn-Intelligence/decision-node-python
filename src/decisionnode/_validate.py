@@ -42,7 +42,9 @@ MAX_TTL_SECONDS = 3600
 MAX_SEQ = 2**53 - 1
 LIST_LIMIT_MAX = 100
 MAX_CUSTOM_ID_CHARS = 512
-DECIDE_TYPES = ("truth", LEGACY_TRUTH, "choice", "score", "number")
+DECIDE_TYPES = ("truth", LEGACY_TRUTH, "choice", "score", "number", "point", "box")
+PLACE_TYPES = ("point", "box")
+UNITS = ("pixels", "normalized")
 SYSTEMONE_TYPES = (LEGACY_TRUTH, "choice", "score")
 Entry = Tuple[Dict[str, Any], Optional[str]]
 Limits = Mapping[str, Any]
@@ -348,8 +350,62 @@ def _score_levels(criteria: Any, systemone: bool) -> Optional[Sequence[Any]]:
     return None
 
 
+def _check_place(
+    qid: str,
+    q: Mapping[str, Any],
+    loc: List[Any],
+    entries: List[Entry],
+    deferred: List[BadRequestError],
+    image_ids: Optional[Sequence[Any]],
+) -> None:
+    """A point or box question: the image it looks in (none to look in, none named among
+    two or more, not a string, not one of the request's), its units, its instructions.
+    ``image_ids`` is ``None`` where the request carries no images of its own (a
+    session's open: its images come with its frames)."""
+    kind = q["type"]
+    if image_ids is not None:
+        image = q.get("image")
+        if not image_ids:
+            entries.append(
+                (_entry("image_required", loc, "A %s question needs an image in the request" % kind, dict(q)), None)
+            )
+        elif image is None:
+            if len(image_ids) >= 2:
+                entries.append((_entry("missing", loc + ["image"], "Field required", dict(q)), None))
+        elif not isinstance(image, str):
+            entries.append((_entry("string_type", loc + ["image"], "Input should be a valid string", image), None))
+        elif image not in image_ids:
+            entries.append(
+                (
+                    _entry(
+                        "unknown_image", loc + ["image"], "Input should be the id of an image of the request", image
+                    ),
+                    None,
+                )
+            )
+    units = q.get("units")
+    if units is not None and units not in UNITS:
+        ctx = {"expected": "'pixels' or 'normalized'"}
+        entries.append(
+            (_entry("literal_error", loc + ["units"], "Input should be 'pixels' or 'normalized'", units, ctx), None)
+        )
+    if q.get("instructions") is None:
+        deferred.append(
+            _plain_400(
+                "%s question must have instructions: %s" % (kind.capitalize(), qid),
+                "question '%s': a %s question needs instructions" % (qid, kind),
+            )
+        )
+
+
 def _check_question(
-    qid: str, q: Any, entries: List[Entry], deferred: List[BadRequestError], systemone: bool, limits: Limits
+    qid: str,
+    q: Any,
+    entries: List[Entry],
+    deferred: List[BadRequestError],
+    systemone: bool,
+    limits: Limits,
+    image_ids: Optional[Sequence[Any]] = None,
 ) -> None:
     base: List[Any] = ["body", "questions", qid]
     if not isinstance(q, Mapping):
@@ -373,7 +429,9 @@ def _check_question(
     if instructions is not None and not _is_sdl(instructions):
         entries.extend(_sdl_entries(loc + ["instructions"], instructions))
     criteria = q.get("criteria")
-    if kind == "number":
+    if kind in PLACE_TYPES:
+        _check_place(qid, q, loc, entries, deferred, image_ids)
+    elif kind == "number":
         grid = limits.get("number_max_grid_values")
         if grid == 0:
             deferred.append(usage_error("Model %s does not answer number questions." % limits.get("model")))
@@ -467,10 +525,15 @@ def _check_question(
 
 
 def check_request(
-    body: Mapping[str, Any], systemone: bool = False, limits: Optional[Limits] = None, extra: Sequence[Entry] = ()
+    body: Mapping[str, Any],
+    systemone: bool = False,
+    limits: Optional[Limits] = None,
+    extra: Sequence[Entry] = (),
+    image_ids: Optional[Sequence[Any]] = None,
 ) -> None:
     """Raise what the API would answer for this body's fixed rules, in the API's order:
-    the nesting limit, every 422 entry, then the first 400 in question order."""
+    the nesting limit, every 422 entry, then the first 400 in question order.
+    ``image_ids`` are the request's image ids, for the point and box rules."""
     check_nesting(body)
     held: Limits = limits or {}
     entries: List[Entry] = list(extra)
@@ -481,7 +544,7 @@ def check_request(
     questions = body.get("questions")
     if isinstance(questions, Mapping):
         for qid, q in questions.items():
-            _check_question(qid, q, entries, deferred, systemone, held)
+            _check_question(qid, q, entries, deferred, systemone, held, image_ids)
     if entries:
         _raise_422(entries)
     if deferred:
@@ -572,7 +635,9 @@ def check_images(images: Sequence[Any], limits: Optional[Limits] = None) -> None
     """Raise what the API would answer for these images: their count, ids, URLs, the
     media type of an upload reference, and for local bytes the format, size and pixels."""
     held: Limits = limits or {}
-    most = held.get("max_images") or MAX_IMAGES
+    published = held.get("images")
+    nested: Mapping[str, Any] = published if isinstance(published, Mapping) else {}
+    most = held.get("max_images") or nested.get("max_images") or MAX_IMAGES
     biggest = held.get("max_image_bytes") or MAX_IMAGE_BYTES
     if len(images) > most:
         raise usage_error(
