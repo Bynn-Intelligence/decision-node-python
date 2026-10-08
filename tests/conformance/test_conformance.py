@@ -106,6 +106,10 @@ class Mock:
     def clock(self, session: str, body: Dict[str, Any]) -> None:
         self.raw("POST", "/_mock/clock?session=" + quote(session, safe=""), json.dumps(body).encode())
 
+    def clock_now(self, session: str) -> float:
+        """The session's clock in epoch seconds, handed to the SDK as its clock."""
+        return float(self.raw("GET", "/_mock/clock?session=" + quote(session, safe=""))["epoch_seconds"])
+
 
 @pytest.fixture(scope="module")
 def mock() -> Iterator[Mock]:
@@ -365,6 +369,12 @@ def decode(value: Any, ctx: Dict[str, Any]) -> Any:
             return resolve_ref(args, ctx)
         if key == "$text":
             return args["repeat"] * args["times"]
+        if key == "$nest":
+            # The value inside depth arrays: [[[...value...]]].
+            out = decode(args["value"], ctx)
+            for _ in range(args["depth"]):
+                out = [out]
+            return out
         if key == "$truth":
             return dn.truth(args.get("instructions"), if_true=args.get("true"), if_false=args.get("false"))
         if key == "$choice":
@@ -873,7 +883,16 @@ async def run_steps(
         elif "send" in step:
             args = dict(step["send"])
             name = args.pop("session")
-            await settle(ctx[name].send(**{k: decode(v, ctx) for k, v in args.items()}))
+            try:
+                await settle(ctx[name].send(**{k: decode(v, ctx) for k, v in args.items()}))
+            except (dn.DecisionNodeError, ValueError) as err:
+                # A frame that breaks a fixed rule is refused locally and nothing is sent.
+                if "outcome" not in step:
+                    raise
+                check_outcome(step["outcome"], err, where + ".outcome")
+            else:
+                if "outcome" in step:
+                    raise Fail("%s: expected the frame to be refused, it was sent" % where)
         elif "read" in step:
             spec = step["read"]
             s = ctx[spec["session"]]
@@ -923,6 +942,9 @@ async def run_behaviour(case: Dict[str, Any], mock: Mock, mode: str, env: pytest
         # An argument error may come from the constructor (a bad base_url, timeout or
         # max_retries) or from the call; both count, as long as nothing was sent.
         client = make_client(case, mode, mock.url, extra, env)
+        if (case.get("client") or {}).get("clock") == "mock":
+            # The SDK's clock reads the mock's clock for this session.
+            client._clock = lambda: mock.clock_now(session)
         if "scheduled_waits_ms" in exp:
             record_waits(client, mode, waits)
         if "steps" in case:
