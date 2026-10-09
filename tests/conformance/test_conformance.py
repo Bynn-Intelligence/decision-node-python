@@ -32,7 +32,7 @@ import decisionnode as dn
 
 KINDS = ("requests", "responses", "errors", "behaviour", "constants")
 ENV_VARS = ("DECISIONNODE_API_KEY", "DECISIONNODE_BASE_URL", "DECISIONNODE_MODEL")
-EXACT = {"probabilities", "legend", "raw", "entries", "safety", "body", "limits", "evidence", "boosters"}
+EXACT = {"probabilities", "legend", "raw", "entries", "safety", "body", "limits", "evidence", "boosters", "fallback"}
 # Compared whole and in their key order too: evidence in the request's order, an
 # error's boosters in the header's.
 ORDERED = {"evidence", "boosters"}
@@ -304,6 +304,10 @@ def norm_safety(s: Optional[dn.Safety]) -> Optional[Dict[str, Any]]:
     return None if s is None else s.to_dict()
 
 
+def norm_fallback(f: Optional[dn.Fallback]) -> Optional[Dict[str, Any]]:
+    return None if f is None else {"served_model": f.served_model, "requested_model": f.requested_model}
+
+
 def norm_decision(d: dn.Decision) -> Dict[str, Any]:
     return {
         "model": d.model,
@@ -318,6 +322,7 @@ def norm_decision(d: dn.Decision) -> Dict[str, Any]:
             "boosters": d.usage.boosters,
         },
         "evidence": norm_evidence(d.evidence),
+        "fallback": norm_fallback(d.fallback),
         "warnings": d.warnings,
         "safety": norm_safety(d.safety),
         "answers": {k: norm_answer(v) for k, v in d.answers.items()},

@@ -25,6 +25,7 @@ __all__ = [
     "Usage",
     "Safety",
     "Decision",
+    "Fallback",
     "ModelInfo",
 ]
 
@@ -222,6 +223,21 @@ class Safety:
 
 
 @dataclass(frozen=True)
+class Fallback:
+    """A fallback answer: the model asked for had no worker ready at once, so another
+    model answered.
+
+    Attributes:
+        served_model: The model that answered, from ``x-decisionnode-fallback``.
+        requested_model: The model the request asked for, from
+            ``x-decisionnode-requested-model``.
+    """
+
+    served_model: str
+    requested_model: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class Decision:
     """The result of one ``decide`` call.
 
@@ -241,6 +257,8 @@ class Decision:
             lower rate or resolution), as sent; empty when it sent none.
         evidence: What each booster of the request read: booster name to
             :class:`Evidence`, in the request's order; ``None`` when the request named none.
+        fallback: On a fallback answer, the model that answered and the model asked for;
+            ``None`` on an ordinary answer. ``model`` is the model that answered.
     """
 
     answers: Dict[str, AnyAnswer]
@@ -252,6 +270,7 @@ class Decision:
     raw: Dict[str, Any] = field(repr=False)
     warnings: List[str] = field(default_factory=list)
     evidence: Optional[Dict[str, Evidence]] = None
+    fallback: Optional[Fallback] = None
 
     def __getitem__(self, question_id: str) -> Any:
         # Typed as Any so that ``decision["route"].choice`` reads naturally under a type
@@ -445,7 +464,16 @@ def parse_decision(body: Any, headers: Mapping[str, str]) -> Decision:
         raw=dict(body),
         warnings=[w for w in warnings if isinstance(w, str)] if isinstance(warnings, list) else [],
         evidence=parse_evidence(body.get("evidence")),
+        fallback=parse_fallback(headers),
     )
+
+
+def parse_fallback(headers: Mapping[str, str]) -> Optional[Fallback]:
+    """The fallback headers of an answer, or ``None`` on an ordinary answer."""
+    served = headers.get("x-decisionnode-fallback")
+    if served is None:
+        return None
+    return Fallback(served_model=served, requested_model=headers.get("x-decisionnode-requested-model"))
 
 
 def parse_latency(value: Optional[str]) -> Optional[Union[int, float]]:

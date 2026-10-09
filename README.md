@@ -141,6 +141,7 @@ The thresholds are yours: the SDK never turns a probability into a decision.
 | `usage.video_frames`, `usage.video_seconds` | For a request with videos: the frames the server read and the seconds of video they cover; `None` otherwise. |
 | `usage.booster_tokens`, `usage.boosters` | For a request with boosters: the share of `input_tokens` the boosters' readings take, and the booster calls billed; `None` otherwise. |
 | `evidence` | For a request with boosters: what each booster read (below); `None` otherwise. |
+| `fallback` | On a fallback answer, the model that answered and the model asked for (below); `None` otherwise. |
 | `warnings` | What the server changed when it read the request's videos (a lower rate or size), as sent; an empty list when there is nothing to say. |
 | `request_id` | The request id. Quote it when you contact support. |
 | `latency_ms` | The server's own time for the request, or `None` when the server sent none. |
@@ -584,6 +585,24 @@ objects.
 Choose per client (`DecisionNode(model="decisionnode-flash-latest")`) or per call
 (`dn.decide(..., model="decisionnode-1.0")`). Each model publishes its limits in
 `models()`.
+
+### Fallback
+
+A request for `decisionnode-1.0` (or `decisionnode-latest`) that no worker of that model
+can take at once is answered by `decisionnode-1.0-flash` instead, billed at its price.
+`d.model` is the model that answered, and `d.fallback` names both:
+
+```python
+d = dn.decide(state=ticket, questions=questions, model="decisionnode-1.0")
+if d.fallback is not None:
+    d.fallback.served_model     # "decisionnode-1.0-flash"
+    d.fallback.requested_model  # "decisionnode-1.0"
+```
+
+`fallback=False` turns it off for one request: such a request gets the 529
+`OverloadedError` instead, which is retried like every 529. `decide`, the helpers,
+`decide_many` requests and batch requests take it; left out, the API's default (on)
+applies. Sessions, batch lines and fine-tuned models never fall back.
 
 ### Fine-tuned models
 

@@ -71,6 +71,7 @@ from ._types import (
     BoxAnswer,
     ChoiceAnswer,
     Decision,
+    Fallback,
     ModelInfo,
     NumberAnswer,
     PointAnswer,
@@ -114,6 +115,7 @@ __all__ = [
     "BoosterInput",
     # results
     "Decision",
+    "Fallback",
     "Answer",
     "AnyAnswer",
     "TruthAnswer",

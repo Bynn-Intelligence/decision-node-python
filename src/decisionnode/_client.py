@@ -105,11 +105,11 @@ __all__ = ["DecisionNode", "AsyncDecisionNode", "DecideRequest", "DecisionResult
 
 DecideRequest = Mapping[str, Any]
 """The arguments of one ``decide`` call for ``decide_many``: ``state``, ``questions``,
-and optionally ``images``, ``videos``, ``model`` and ``boosters``."""
+and optionally ``images``, ``videos``, ``model``, ``boosters`` and ``fallback``."""
 
 BatchRequest = Mapping[str, Any]
 """One request of a batch: ``custom_id``, ``state``, ``questions``, and optionally
-``images``, ``videos``, ``model`` and ``boosters``."""
+``images``, ``videos``, ``model``, ``boosters`` and ``fallback``."""
 
 DecisionResult = Union[Decision, DecisionNodeError]
 """One result of ``decide_many``: the :class:`Decision`, or the error that request ended with."""
@@ -309,7 +309,7 @@ class _Prepared:
     is written once the uploads are done.
     """
 
-    __slots__ = ("path", "state", "questions", "images", "videos", "model", "boosters", "plan", "content")
+    __slots__ = ("path", "state", "questions", "images", "videos", "model", "boosters", "fallback", "plan", "content")
 
     def __init__(
         self,
@@ -320,6 +320,7 @@ class _Prepared:
         model: Optional[str],
         videos: List[Dict[str, Any]],
         boosters: Any = None,
+        fallback: Optional[bool] = None,
     ) -> None:
         self.path = path
         self.state = state
@@ -327,8 +328,9 @@ class _Prepared:
         self.images = images
         self.videos = videos
         self.model = model
-        # The boosters field as sent, or None for none.
+        # The boosters field as sent, or None for none; the fallback option as given.
         self.boosters = boosters
+        self.fallback = fallback
         self.plan: Optional[ImagePlan] = None
         self.content: Optional[bytes] = None
 
@@ -448,6 +450,7 @@ class _Common:
         path: str,
         videos: Any = None,
         boosters: Any = None,
+        fallback: Optional[bool] = None,
     ) -> _Prepared:
         """Check a request against the API's fixed rules and plan its images, all before
         any request. Argument problems raise ``ValueError``; content the API would refuse
@@ -455,7 +458,7 @@ class _Common:
         qs, imgs, vids, bsts = self._check_decision(
             state, questions, images, model, path, videos=videos, boosters=boosters
         )
-        prep = _Prepared(path, state, qs, imgs, model, vids, bsts)
+        prep = _Prepared(path, state, qs, imgs, model, vids, bsts, _base.check_fallback(fallback))
         plan = self._plan(imgs)
         prep.plan = plan
         if plan.uploads:
@@ -499,7 +502,14 @@ class _Common:
     def _body(self, prep: _Prepared, wires: Sequence[Mapping[str, Any]]) -> bytes:
         return _base.encode(
             _base.decide_body(
-                prep.state, prep.questions, wires, prep.model, self._settings.model, prep.videos, prep.boosters
+                prep.state,
+                prep.questions,
+                wires,
+                prep.model,
+                self._settings.model,
+                prep.videos,
+                prep.boosters,
+                prep.fallback,
             )
         )
 
@@ -518,6 +528,7 @@ class _Common:
                         _base.DECIDE_PATH,
                         req.get("videos"),
                         req.get("boosters"),
+                        req.get("fallback"),
                     )
                 )
             except ValueError as exc:
@@ -566,6 +577,7 @@ class _Common:
                 _base.DECIDE_PATH,
                 arguments.get("videos"),
                 arguments.get("boosters"),
+                arguments.get("fallback"),
             )
         elif method == "open_session":
             unknown = set(arguments) - SESSION_KEYS
@@ -601,6 +613,7 @@ class _Common:
                 qs = _base.check_question_map(req.get("questions"))
                 imgs = _base.image_list(req.get("images"))
                 vids = video_list(req.get("videos"))
+                _base.check_fallback(req.get("fallback"))
             except ValueError as exc:
                 raise ValueError("batch request %d: %s" % (i, exc)) from exc
             bsts = booster_wire(req.get("boosters"))
@@ -1017,8 +1030,11 @@ class DecisionNode(_Common):
         model: Any,
         videos: Any,
         boosters: Any,
+        fallback: Optional[bool] = None,
     ) -> _A:
-        prep = self._prepare(state, {question_id: question}, images, model, _base.DECIDE_PATH, videos, boosters)
+        prep = self._prepare(
+            state, {question_id: question}, images, model, _base.DECIDE_PATH, videos, boosters, fallback
+        )
         status, headers, text = self._execute(prep)
         decision = parse_decision(_base.parse_json(status, headers, text), headers)
         return _single(decision, question_id, kind, status, headers)
@@ -1034,6 +1050,7 @@ class DecisionNode(_Common):
         *,
         videos: Optional[Sequence[VideoInput]] = None,
         boosters: Optional[Sequence[BoosterInput]] = None,
+        fallback: Optional[bool] = None,
     ) -> Decision:
         """Ask one or more questions about a state in one request.
 
@@ -1046,6 +1063,12 @@ class DecisionNode(_Common):
             videos: Up to 4 :class:`Video` objects (frames with their times) every question
                 can see.
             model: The model for this call. Default (also for ``""``): the client's model.
+            boosters: Booster names, or :class:`Booster` objects for a booster that needs
+                a setting, read before the decision; their readings come back in
+                ``evidence``.
+            fallback: ``False``: a ``decisionnode-1.0`` request that no worker can take at
+                once gets the 529 :class:`OverloadedError` instead of an answer from
+                ``decisionnode-1.0-flash``. Left out, the API's default (``True``) applies.
 
         Returns:
             A :class:`Decision`. Read each answer by its id: ``decision["route"]``.
@@ -1054,7 +1077,9 @@ class DecisionNode(_Common):
             BadRequestError, ValidationError: before anything is sent, for a request the
                 API would refuse by its fixed rules (an image, a question's limits).
         """
-        return self._decision(self._prepare(state, questions, images, model, _base.DECIDE_PATH, videos, boosters))
+        return self._decision(
+            self._prepare(state, questions, images, model, _base.DECIDE_PATH, videos, boosters, fallback)
+        )
 
     def decide_many(
         self,
@@ -1096,13 +1121,22 @@ class DecisionNode(_Common):
         videos: Optional[Sequence[VideoInput]] = None,
         model: Optional[str] = None,
         boosters: Optional[Sequence[BoosterInput]] = None,
+        fallback: Optional[bool] = None,
     ) -> TruthAnswer:
         """Ask one ``truth`` question. Returns its :class:`TruthAnswer`.
 
         Raises :class:`ServerError` when that answer is missing or malformed.
         """
         return self._ask(
-            "check", _truth(instructions, if_true, if_false), TruthAnswer, state, images, model, videos, boosters
+            "check",
+            _truth(instructions, if_true, if_false),
+            TruthAnswer,
+            state,
+            images,
+            model,
+            videos,
+            boosters,
+            fallback,
         )
 
     def classify(
@@ -1115,13 +1149,14 @@ class DecisionNode(_Common):
         videos: Optional[Sequence[VideoInput]] = None,
         model: Optional[str] = None,
         boosters: Optional[Sequence[BoosterInput]] = None,
+        fallback: Optional[bool] = None,
     ) -> ChoiceAnswer:
         """Ask one ``choice`` question. Returns its :class:`ChoiceAnswer`.
 
         Raises :class:`ServerError` when that answer is missing or malformed.
         """
         return self._ask(
-            "classify", _choice(instructions, options), ChoiceAnswer, state, images, model, videos, boosters
+            "classify", _choice(instructions, options), ChoiceAnswer, state, images, model, videos, boosters, fallback
         )
 
     def score(
@@ -1134,12 +1169,15 @@ class DecisionNode(_Common):
         videos: Optional[Sequence[VideoInput]] = None,
         model: Optional[str] = None,
         boosters: Optional[Sequence[BoosterInput]] = None,
+        fallback: Optional[bool] = None,
     ) -> ScoreAnswer:
         """Ask one ``score`` question. Returns its :class:`ScoreAnswer`.
 
         Raises :class:`ServerError` when that answer is missing or malformed.
         """
-        return self._ask("score", _score(instructions, levels), ScoreAnswer, state, images, model, videos, boosters)
+        return self._ask(
+            "score", _score(instructions, levels), ScoreAnswer, state, images, model, videos, boosters, fallback
+        )
 
     def number(
         self,
@@ -1153,13 +1191,22 @@ class DecisionNode(_Common):
         videos: Optional[Sequence[VideoInput]] = None,
         model: Optional[str] = None,
         boosters: Optional[Sequence[BoosterInput]] = None,
+        fallback: Optional[bool] = None,
     ) -> NumberAnswer:
         """Ask one ``number`` question. Returns its :class:`NumberAnswer`.
 
         Raises :class:`ServerError` when that answer is missing or malformed.
         """
         return self._ask(
-            "number", _number(instructions, min, max, step), NumberAnswer, state, images, model, videos, boosters
+            "number",
+            _number(instructions, min, max, step),
+            NumberAnswer,
+            state,
+            images,
+            model,
+            videos,
+            boosters,
+            fallback,
         )
 
     def gate(
@@ -1171,6 +1218,7 @@ class DecisionNode(_Common):
         videos: Optional[Sequence[VideoInput]] = None,
         model: Optional[str] = None,
         boosters: Optional[Sequence[BoosterInput]] = None,
+        fallback: Optional[bool] = None,
     ) -> Decision:
         """Judge an action before it runs.
 
@@ -1180,7 +1228,13 @@ class DecisionNode(_Common):
         the answers is up to your code.
         """
         return self.decide(
-            _base.gate_state(action, context), _base.gate_questions(), images, model, videos=videos, boosters=boosters
+            _base.gate_state(action, context),
+            _base.gate_questions(),
+            images,
+            model,
+            videos=videos,
+            boosters=boosters,
+            fallback=fallback,
         )
 
     def models(self) -> List[ModelInfo]:
@@ -1678,8 +1732,11 @@ class AsyncDecisionNode(_Common):
         model: Any,
         videos: Any,
         boosters: Any,
+        fallback: Optional[bool] = None,
     ) -> _A:
-        prep = self._prepare(state, {question_id: question}, images, model, _base.DECIDE_PATH, videos, boosters)
+        prep = self._prepare(
+            state, {question_id: question}, images, model, _base.DECIDE_PATH, videos, boosters, fallback
+        )
         status, headers, text = await self._execute(prep)
         decision = parse_decision(_base.parse_json(status, headers, text), headers)
         return _single(decision, question_id, kind, status, headers)
@@ -1695,9 +1752,12 @@ class AsyncDecisionNode(_Common):
         *,
         videos: Optional[Sequence[VideoInput]] = None,
         boosters: Optional[Sequence[BoosterInput]] = None,
+        fallback: Optional[bool] = None,
     ) -> Decision:
         """Ask one or more questions about a state in one request. See :meth:`DecisionNode.decide`."""
-        return await self._decision(self._prepare(state, questions, images, model, _base.DECIDE_PATH, videos, boosters))
+        return await self._decision(
+            self._prepare(state, questions, images, model, _base.DECIDE_PATH, videos, boosters, fallback)
+        )
 
     async def decide_many(
         self,
@@ -1732,13 +1792,22 @@ class AsyncDecisionNode(_Common):
         videos: Optional[Sequence[VideoInput]] = None,
         model: Optional[str] = None,
         boosters: Optional[Sequence[BoosterInput]] = None,
+        fallback: Optional[bool] = None,
     ) -> TruthAnswer:
         """Ask one ``truth`` question. Returns its :class:`TruthAnswer`.
 
         Raises :class:`ServerError` when that answer is missing or malformed.
         """
         return await self._ask(
-            "check", _truth(instructions, if_true, if_false), TruthAnswer, state, images, model, videos, boosters
+            "check",
+            _truth(instructions, if_true, if_false),
+            TruthAnswer,
+            state,
+            images,
+            model,
+            videos,
+            boosters,
+            fallback,
         )
 
     async def classify(
@@ -1751,13 +1820,14 @@ class AsyncDecisionNode(_Common):
         videos: Optional[Sequence[VideoInput]] = None,
         model: Optional[str] = None,
         boosters: Optional[Sequence[BoosterInput]] = None,
+        fallback: Optional[bool] = None,
     ) -> ChoiceAnswer:
         """Ask one ``choice`` question. Returns its :class:`ChoiceAnswer`.
 
         Raises :class:`ServerError` when that answer is missing or malformed.
         """
         return await self._ask(
-            "classify", _choice(instructions, options), ChoiceAnswer, state, images, model, videos, boosters
+            "classify", _choice(instructions, options), ChoiceAnswer, state, images, model, videos, boosters, fallback
         )
 
     async def score(
@@ -1770,13 +1840,14 @@ class AsyncDecisionNode(_Common):
         videos: Optional[Sequence[VideoInput]] = None,
         model: Optional[str] = None,
         boosters: Optional[Sequence[BoosterInput]] = None,
+        fallback: Optional[bool] = None,
     ) -> ScoreAnswer:
         """Ask one ``score`` question. Returns its :class:`ScoreAnswer`.
 
         Raises :class:`ServerError` when that answer is missing or malformed.
         """
         return await self._ask(
-            "score", _score(instructions, levels), ScoreAnswer, state, images, model, videos, boosters
+            "score", _score(instructions, levels), ScoreAnswer, state, images, model, videos, boosters, fallback
         )
 
     async def number(
@@ -1791,13 +1862,22 @@ class AsyncDecisionNode(_Common):
         videos: Optional[Sequence[VideoInput]] = None,
         model: Optional[str] = None,
         boosters: Optional[Sequence[BoosterInput]] = None,
+        fallback: Optional[bool] = None,
     ) -> NumberAnswer:
         """Ask one ``number`` question. Returns its :class:`NumberAnswer`.
 
         Raises :class:`ServerError` when that answer is missing or malformed.
         """
         return await self._ask(
-            "number", _number(instructions, min, max, step), NumberAnswer, state, images, model, videos, boosters
+            "number",
+            _number(instructions, min, max, step),
+            NumberAnswer,
+            state,
+            images,
+            model,
+            videos,
+            boosters,
+            fallback,
         )
 
     async def gate(
@@ -1809,10 +1889,17 @@ class AsyncDecisionNode(_Common):
         videos: Optional[Sequence[VideoInput]] = None,
         model: Optional[str] = None,
         boosters: Optional[Sequence[BoosterInput]] = None,
+        fallback: Optional[bool] = None,
     ) -> Decision:
         """Judge an action before it runs. See :meth:`DecisionNode.gate`."""
         return await self.decide(
-            _base.gate_state(action, context), _base.gate_questions(), images, model, videos=videos, boosters=boosters
+            _base.gate_state(action, context),
+            _base.gate_questions(),
+            images,
+            model,
+            videos=videos,
+            boosters=boosters,
+            fallback=fallback,
         )
 
     async def models(self) -> List[ModelInfo]:

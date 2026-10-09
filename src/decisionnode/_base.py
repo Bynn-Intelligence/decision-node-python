@@ -254,9 +254,11 @@ def decide_body(
     default_model: str,
     videos: Sequence[Mapping[str, Any]] = (),
     boosters: Any = None,
+    fallback: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    """The decide body. ``boosters`` is the field as sent (``booster_wire``); ``None``
-    leaves the key out, so a request without boosters is unchanged."""
+    """The decide body. ``boosters`` is the field as sent (``booster_wire``) and
+    ``fallback`` the option as given; ``None`` leaves either key out, so a request
+    without them is unchanged."""
     body: Dict[str, Any] = {
         "model": model or default_model,
         "state": "" if state is None or state is UNSET else state,
@@ -268,10 +270,19 @@ def decide_body(
         body["videos"] = list(videos)
     if boosters is not None:
         body["boosters"] = boosters
+    if fallback is not None:
+        body["fallback"] = fallback
     return body
 
 
-DECIDE_KEYS = frozenset({"state", "questions", "images", "videos", "model", "boosters"})
+DECIDE_KEYS = frozenset({"state", "questions", "images", "videos", "model", "boosters", "fallback"})
+
+
+def check_fallback(fallback: Any) -> Optional[bool]:
+    """The ``fallback`` option: ``True``, ``False`` or ``None`` (left out)."""
+    if fallback is not None and not isinstance(fallback, bool):
+        raise ValueError("fallback must be True or False, got %r" % (fallback,))
+    return fallback
 
 
 def should_retry(policy: str, status: int, error: DecisionNodeError) -> bool:
