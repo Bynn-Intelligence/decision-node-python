@@ -358,14 +358,14 @@ answered exactly as before.
 | `ai_generated` | Any picture | How likely the picture was made by an image generator, which generator most likely, and whether the file carries Content Credentials (C2PA) and who signed them |
 
 ```python
-from decisionnode import Booster, Image, truth
+from decisionnode import Image, truth
 
 d = dn.decide(
     images=[
         Image("a1b2", url="https://files.example.com/a1b2.jpg"),
         Image("c3d4", url="https://files.example.com/c3d4.jpg"),
     ],
-    boosters=["age", Booster("ai_generated", images=["c3d4"], require=True)],
+    boosters=["age", "ai_generated"],
     questions={
         "adult": truth("Is the person in the first picture an adult?"),
         "synthetic": truth("Is the second picture AI-generated?"),
@@ -376,17 +376,32 @@ d["adult"].truth  # 0.97
 age = d.evidence["age"]
 age.status, age.version  # "ok", "age-v3"
 age.results[0].age_years, age.results[0].low, age.results[0].high  # 27, 22, 33
-d.evidence["ai_generated"].results[0].generated  # 0.93
-d.usage.booster_tokens, d.usage.boosters  # 72, 3
+d.evidence["ai_generated"].results[1].generated  # 0.93
+d.usage.booster_tokens, d.usage.boosters  # 72, 4
 ```
 
-`boosters` is a list of booster names and `Booster` objects, in the order you want them
-reported; a plain wire-form mapping (`{"booster": "age"}`) works too. `decide`, the
+`boosters` is a list of booster names, in the order you want them reported. `decide`, the
 helpers, `decide_many` requests and batch requests take it. Sessions do not.
+
+A booster that needs a setting is a `Booster`. Here `ai_generated` reads only the second
+picture, and the request fails if it cannot:
+
+```python
+from decisionnode import Booster
+
+d = dn.decide(
+    images=images,
+    boosters=["age", Booster("ai_generated", images=["c3d4"], require=True)],
+    questions=questions,
+)
+```
 
 | Argument | |
 |---|---|
 | `Booster(name, images=None, require=None, options=None)` | `images`: the ids of the request's images the booster reads; left out, every image. `require=True`: a booster that fails or does not answer in time fails the request with `OverloadedError` (`error_type` `booster_unavailable`), which is retried like every 529; left out, the decision runs without that reading and `evidence` says why. `options`: settings of a booster, for boosters that have any |
+
+It is sent as `{"name": "ai_generated", "images": ["c3d4"], "require": true}`, each setting
+only when given; a plain mapping in that form works too.
 
 The client checks nothing about boosters itself: the API answers a malformed list, an
 unknown name and a booster turned off for your workspace before any booster runs and

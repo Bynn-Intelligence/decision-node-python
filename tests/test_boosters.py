@@ -95,16 +95,16 @@ def test_wire_forms_in_order(mode: str) -> None:
             dn.Booster("age2", options={"k": 1}),
             dn.Booster("plain"),
             dn.Booster("soft", require=False),
-            {"booster": "wire", "images": ["a1b2"]},
+            {"name": "wire", "images": ["a1b2"]},
         ],
     )
     assert rec.body()["boosters"] == [
         "age",
-        {"booster": "ai_generated", "images": ["c3d4"], "require": True},
-        {"booster": "age2", "options": {"k": 1}},
-        {"booster": "plain"},
-        {"booster": "soft", "require": False},
-        {"booster": "wire", "images": ["a1b2"]},
+        {"name": "ai_generated", "images": ["c3d4"], "require": True},
+        {"name": "age2", "options": {"k": 1}},
+        {"name": "plain"},
+        {"name": "soft", "require": False},
+        {"name": "wire", "images": ["a1b2"]},
     ]
     # Last in the body, so a body without boosters is the body of a client without them.
     assert list(rec.body())[-1] == "boosters"
@@ -120,7 +120,7 @@ def test_no_boosters_no_key(mode: str, value: Any) -> None:
     assert rec.requests[0].content == rec.requests[1].content
 
 
-@pytest.mark.parametrize("value", ["age", [5], ["a", "b", "c", "d", "e"], ["age", "age"], {"booster": "age"}])
+@pytest.mark.parametrize("value", ["age", [5], ["a", "b", "c", "d", "e"], ["age", "age"], {"name": "age"}])
 def test_nothing_checked_locally(mode: str, value: Any) -> None:
     rec = Recorder(ok())
     Harness(mode, rec).call("decide", "s", Q, boosters=value)
@@ -152,7 +152,7 @@ def test_helpers_carry_boosters(mode: str) -> None:
         assert rec.body()["boosters"] == ["age"], name
     rec = Recorder(ok())
     Harness(mode, rec).call("gate", "drop table", boosters=[dn.Booster("age", require=True)])
-    assert rec.body()["boosters"] == [{"booster": "age", "require": True}]
+    assert rec.body()["boosters"] == [{"name": "age", "require": True}]
 
 
 def test_decide_many_and_batches(mode: str) -> None:
@@ -161,7 +161,7 @@ def test_decide_many_and_batches(mode: str) -> None:
         "decide_many", [{"state": "a", "questions": Q, "boosters": [dn.Booster("age", images=["x"])]}, {"questions": Q}]
     )
     bodies = sorted((json.loads(r.content) for r in rec.requests), key=lambda b: b["state"])
-    assert "boosters" not in bodies[0] and bodies[1]["boosters"] == [{"booster": "age", "images": ["x"]}]
+    assert "boosters" not in bodies[0] and bodies[1]["boosters"] == [{"name": "age", "images": ["x"]}]
 
     batch = {"id": "batch_1", "state": "draft", "counters": {}}
     rec = Recorder(json_response(200, batch))
@@ -173,7 +173,7 @@ def test_decide_many_and_batches(mode: str) -> None:
         ],
     )
     lines = [json.loads(line) for line in rec.requests[0].content.decode().splitlines()]
-    assert lines[0]["boosters"] == ["age", {"booster": "ai_generated", "require": True}]
+    assert lines[0]["boosters"] == ["age", {"name": "ai_generated", "require": True}]
     assert list(lines[0])[-1] == "boosters"
     assert "boosters" not in lines[1]
 
@@ -213,7 +213,7 @@ def test_nesting_counts_options(mode: str) -> None:
     assert info.value.error_type == "api_usage_error" and info.value.status is None
     assert len(rec.requests) == 1
     with pytest.raises(dn.BadRequestError):
-        h.call("check_request", "decide", questions=Q, boosters=[{"booster": "age", "options": {"k": nest(125)}}])
+        h.call("check_request", "decide", questions=Q, boosters=[{"name": "age", "options": {"k": nest(125)}}])
     with pytest.raises(dn.BadRequestError):
         h.call(
             "check_request",

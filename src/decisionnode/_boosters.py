@@ -50,7 +50,7 @@ class Booster:
 
     def to_dict(self) -> Dict[str, Any]:
         """The booster in the API's wire form."""
-        out: Dict[str, Any] = {"booster": self.name}
+        out: Dict[str, Any] = {"name": self.name}
         if self.images is not None:
             out["images"] = list(self.images) if isinstance(self.images, (list, tuple)) else self.images
         if self.require is not None:
