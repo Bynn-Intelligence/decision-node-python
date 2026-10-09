@@ -182,7 +182,9 @@ class Evidence:
         status: ``ok``, ``timeout`` (no answer in time), ``error``, or ``skipped`` (none
             of the request's images is one it reads); any other value as received.
         latency_ms: How long the booster took, in milliseconds.
-        results: One reading per image read; empty unless ``status`` is ``ok``.
+        results: One reading per image the booster was to read. A picture it did not read
+            (it timed out or failed) or could not decode (``readable`` false) is an
+            :class:`UnknownReading` holding those fields; ``status`` says why.
         raw: The entry exactly as received.
         billed_calls: The calls of this booster billed on this request; ``None`` when the
             server did not send it.

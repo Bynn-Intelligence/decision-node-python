@@ -417,7 +417,7 @@ before any charge. A booster added to the API works with this version of the pac
 | `status` | `ok`; `timeout` (no answer in time); `error`; `skipped` (none of the request's images is one it reads) |
 | `latency_ms` | How long the booster took |
 | `billed_calls` | The calls of this booster billed on this request |
-| `results` | One reading per image read, each naming its `image`; empty unless `status` is `ok` |
+| `results` | One reading per image the booster was to read, each naming its `image`. A picture it did not read (it timed out or failed) or could not decode (`readable` false) is an `UnknownReading` holding those fields, and `status` says why |
 
 | Reading | Fields |
 |---|---|
