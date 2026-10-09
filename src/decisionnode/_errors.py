@@ -44,7 +44,11 @@ class DecisionNodeError(Exception):
 
     ``str(error)`` is the server's ``message`` exactly: ``detail.message`` when the
     error body has one, ``detail`` itself when the body carries a plain string, else
-    the empty string (never ``None``). Errors raised without a response carry the client's description instead.
+    the empty string (never ``None``). When the body is not JSON (an HTML or text page,
+    or no body), it is the client's ``HTTP <status> <text>``, for example
+    ``HTTP 413 Content Too Large``, with `` (request id <id>)`` when the response has an
+    ``x-request-id``. Errors raised without a response carry the client's description
+    instead.
 
     Attributes:
         status: The HTTP status, or ``None`` when no response was received.
@@ -53,7 +57,9 @@ class DecisionNodeError(Exception):
         request_id: The ``x-request-id`` response header.
         reason: The server's explanation in words, from the ``x-decisionnode-error``
             header, for example ``question 'q': a score takes up to 10 levels, got 11``.
-        body: The parsed error body, or its text when it is not JSON.
+        body: The parsed error body, or ``None`` when it is not JSON (an HTML or text
+            page, or no body): such a body is never read, and the message is then
+            ``HTTP <status> <text>``, with the request id when the response has one.
         headers: The response headers, with lower-case names.
         boosters: For a request that named boosters, what each booster did, from the
             ``x-decisionnode-boosters`` header: booster name to :class:`BoosterStatus`, in

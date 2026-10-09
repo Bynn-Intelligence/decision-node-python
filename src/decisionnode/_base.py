@@ -409,15 +409,51 @@ def lower_headers(headers: httpx.Headers) -> Dict[str, str]:
 # --------------------------------------------------------------------------- errors
 
 
+# The status text of an error whose body is not JSON: the same in every DecisionNode
+# SDK, never the HTTP library's own wording.
+_STATUS_TEXT = {
+    400: "Bad Request",
+    401: "Unauthorized",
+    402: "Payment Required",
+    403: "Forbidden",
+    404: "Not Found",
+    405: "Method Not Allowed",
+    408: "Request Timeout",
+    409: "Conflict",
+    410: "Gone",
+    413: "Content Too Large",
+    422: "Unprocessable Content",
+    429: "Too Many Requests",
+    500: "Internal Server Error",
+    502: "Bad Gateway",
+    503: "Service Unavailable",
+    504: "Gateway Timeout",
+    529: "Overloaded",
+}
+
+
+def status_message(status: int, request_id: Optional[str]) -> str:
+    """The client's own message for an error whose body is not JSON (an edge's or a
+    proxy's page, or no body): ``HTTP <status> <text>``, then the request id when sent."""
+    out = "HTTP %d" % status
+    if status in _STATUS_TEXT:
+        out += " " + _STATUS_TEXT[status]
+    if request_id is not None:
+        out += " (request id %s)" % request_id
+    return out
+
+
 def make_error(status: int, headers: Mapping[str, str], text: str) -> DecisionNodeError:
-    body: Any
+    body: Any = None
+    message: Optional[str] = None
     try:
-        body = json.loads(text) if text else None
+        body = json.loads(text)
     except ValueError:
-        body = text
+        # Not the JSON envelope (an HTML or text page, or an empty body): the class
+        # follows the status alone, and the page is never read into any field.
+        message = status_message(status, headers.get("x-request-id"))
     detail = body.get("detail") if isinstance(body, Mapping) else None
     error_type: Optional[str] = None
-    message: Optional[str] = None
     category: Optional[str] = None
     entries: Optional[List[Any]] = None
     if isinstance(detail, Mapping):

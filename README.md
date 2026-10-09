@@ -654,6 +654,14 @@ server sent none, never `None`), or the client's description when no response ar
 | 3xx and every other status | `DecisionNodeError` itself, with `status` | |
 | no response | `ConnectionError`, `TimeoutError` | |
 
+An error whose body is not JSON (a page from a proxy or the service's edge, or no body at
+all) is classed by its status alone, as in the table: a 400 is a `BadRequestError`, a 403
+a `PermissionDeniedError`, a 422 a `ValidationError` with no `entries`. Its `error_type` is
+`None`, `request_id` and `reason` come from the response headers when it has them, and the
+page is never read: the message is the client's own, `HTTP <status> <text>` (for example
+`HTTP 413 Content Too Large`), followed by ` (request id <id>)` when the response has an
+`x-request-id`. It is retried as any other error of its status: a 408 is, a 413 is not.
+
 ```python
 from decisionnode import DecisionNodeError, ValidationError
 
@@ -688,8 +696,10 @@ with no `status` and no `request_id`. The checks run in the API's order:
   without options or with more than 255, a
   score with more than 10 levels, a truth question with neither instructions nor
   criteria, a number question without instructions;
-- every image rule above, and for a URL: `https`, at most 2,048 characters, no user
-  information, port 443, not a literal private address (`image_url_refused`);
+- every image rule above, an id for each image of at most 64 characters (counted as
+  characters, not bytes: "Image 1: its id is longer than 64 characters."), each id used
+  once, and for a URL: `https`, at most 2,048 characters, no user information, port 443,
+  not a literal private address (`image_url_refused`);
 - for sessions, `window` (1 to 64) and `ttl_seconds` (1 to 3,600) as `ValidationError`, and
   each frame in `Session.send`, which raises `BadRequestError` for a frame the server would
   refuse (an unknown question id, an empty frame, an image by URL...) without writing

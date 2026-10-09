@@ -39,6 +39,8 @@ MAX_GRID_VALUES = 4096
 NUMBER_MAX_DECIMALS = 6
 TWO_53 = 2**53
 MAX_NESTING = 128
+# An image id's length in characters (code points), decided 2026-10-09.
+MAX_IMAGE_ID_CHARS = 64
 # The API's request body limit, 25 MiB: inline images count, uploads and URLs do not.
 MAX_BODY_BYTES = 26_214_400
 BODY_TOO_LARGE = (
@@ -700,6 +702,8 @@ def check_images(images: Sequence[Any], limits: Optional[Limits] = None) -> None
             raise ValueError("images must be Image objects or wire-form mappings, got %r" % (img,))
         if not isinstance(iid, str) or iid == "":
             raise usage_error("Image %d needs an id." % i)
+        if len(iid) > MAX_IMAGE_ID_CHARS:
+            raise usage_error("Image %d: its id is longer than %d characters." % (i, MAX_IMAGE_ID_CHARS))
         if iid in seen:
             raise usage_error("Duplicate image id: %s" % iid)
         seen.add(iid)

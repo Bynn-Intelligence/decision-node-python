@@ -44,6 +44,12 @@ Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`).
 - `PermissionDeniedError` is documented as every 403 that is not a refusal, a booster
   turned off for the workspace included; `OverloadedError` as also raised, and retried,
   for a required booster that failed (`booster_unavailable`).
+- An error whose body is not JSON (an HTML or text page, or no body) is classed by its
+  status alone, with `error_type` `None`, `request_id` and `reason` from the headers and
+  the client's own message, `HTTP <status> <text>` (`HTTP 413 Content Too Large`), with
+  the request id when sent. The page is never read: `body` is `None`.
+- An image id of more than 64 characters is refused before anything is sent:
+  `BadRequestError` `api_usage_error`, "Image <n>: its id is longer than 64 characters."
 
 ## [0.2.0] - Unreleased
 

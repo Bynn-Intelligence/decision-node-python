@@ -742,7 +742,9 @@ def test_rate_limit_retry_after(mode: str) -> None:
 
 def test_non_json_error_body(mode: str) -> None:
     e = raise_for(mode, httpx.Response(502, content=b"<html>Bad gateway</html>"))
-    assert type(e) is dn.ServerError and e.body == "<html>Bad gateway</html>" and e.error_type is None
+    # The page is never read: the client's own message, and no body.
+    assert type(e) is dn.ServerError and e.body is None and e.error_type is None
+    assert e.message == "HTTP 502 Bad Gateway"
 
 
 # --------------------------------------------------------------------------- logging
