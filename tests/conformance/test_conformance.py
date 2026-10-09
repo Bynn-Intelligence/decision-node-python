@@ -281,6 +281,7 @@ def norm_evidence(evidence: Any) -> Optional[Dict[str, Any]]:
             "version": e.version,
             "status": e.status,
             "latency_ms": e.latency_ms,
+            "billed_calls": e.billed_calls,
             "results": [norm_reading(r) for r in e.results],
         }
         for name, e in evidence.items()

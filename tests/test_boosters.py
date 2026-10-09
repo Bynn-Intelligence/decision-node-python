@@ -21,6 +21,7 @@ EVIDENCE: Dict[str, Any] = {
         "version": "age-v3",
         "status": "ok",
         "latency_ms": 212,
+        "billed_calls": 2,
         "results": [
             {"image": "a1b2", "age_years": 27, "low": 22, "high": 33, "confidence": 0.81, "faces": 1},
             {"image": "c3d4", "faces": 0},
@@ -102,7 +103,8 @@ def test_wire_forms_in_order(mode: str) -> None:
         "age",
         {"name": "ai_generated", "images": ["c3d4"], "require": True},
         {"name": "age2", "options": {"k": 1}},
-        {"name": "plain"},
+        # A Booster with no setting goes as its name, the plain list's form.
+        "plain",
         {"name": "soft", "require": False},
         {"name": "wire", "images": ["a1b2"]},
     ]
@@ -252,7 +254,9 @@ def test_evidence_and_usage(mode: str) -> None:
     d = Harness(mode, Recorder(ok(body, {"x-decisionnode-boosters": HEADER}))).call("decide", "s", Q, boosters=["age"])
     assert list(d.evidence) == ["age", "ai_generated"]
     age = d.evidence["age"]
-    assert (age.version, age.status, age.latency_ms) == ("age-v3", "ok", 212)
+    assert (age.version, age.status, age.latency_ms, age.billed_calls) == ("age-v3", "ok", 212, 2)
+    # A server that does not send billed_calls: None, never 0.
+    assert d.evidence["ai_generated"].billed_calls is None
     first, second = age.results
     assert type(first) is dn.AgeReading
     assert (first.image, first.faces, first.age_years, first.low, first.high, first.confidence) == (

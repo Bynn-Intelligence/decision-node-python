@@ -402,7 +402,8 @@ d = dn.decide(
 | `Booster(name, images=None, require=None, options=None)` | `images`: the ids of the request's images the booster reads; left out, every image. `require=True`: a booster that fails or does not answer in time fails the request with `OverloadedError` (`error_type` `booster_unavailable`), which is retried like every 529; left out, the decision runs without that reading and `evidence` says why. `options`: settings of a booster, for boosters that have any |
 
 It is sent as `{"name": "ai_generated", "images": ["c3d4"], "require": true}`, each setting
-only when given; a plain mapping in that form works too.
+only when given; a plain mapping in that form works too. A `Booster` with no setting is sent
+as its name, so the request stays the plain list.
 
 The client checks nothing about boosters itself: the API answers a malformed list, an
 unknown name and a booster turned off for your workspace before any booster runs and
@@ -415,6 +416,7 @@ before any charge. A booster added to the API works with this version of the pac
 | `version` | The version of the booster that read, such as `age-v3` |
 | `status` | `ok`; `timeout` (no answer in time); `error`; `skipped` (none of the request's images is one it reads) |
 | `latency_ms` | How long the booster took |
+| `billed_calls` | The calls of this booster billed on this request; a picture it read for your workspace in the last hour is not billed again |
 | `results` | One reading per image read, each naming its `image`; empty unless `status` is `ok` |
 
 | Reading | Fields |

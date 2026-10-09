@@ -13,11 +13,12 @@ Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`).
 - Boosters: `boosters` on `decide`, `check`, `classify`, `score`, `number`, `gate`,
   `decide_many` requests, batch requests and `check_request`, as booster names,
   `Booster(name, images, require, options)` objects (sent as `{"name": ...}` with each
-  setting only when given) or wire-form mappings, sent in the order given. Left out or
+  setting only when given, or as the bare name when none is) or wire-form mappings, sent
+  in the order given. Left out or
   empty, the request has no `boosters` field. The client checks nothing about boosters
   itself; the API answers. Sessions take no boosters.
 - `Decision.evidence`: booster name to `Evidence` (`version`, `status`, `latency_ms`,
-  `results`), with `AgeReading`, `AiGeneratedReading` (its `TopGenerator`, `None` unless
+  `billed_calls`, `results`), with `AgeReading`, `AiGeneratedReading` (its `TopGenerator`, `None` unless
   the reading says likely generated, `c2pa_signer`, and `c2pa`, `untrusted` for Content
   Credentials that validate but are not trusted) and `UnknownReading` for a reading of a
   booster this version does not know or with a field missing or of the wrong type. `None`

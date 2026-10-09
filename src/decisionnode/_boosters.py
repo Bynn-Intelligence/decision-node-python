@@ -49,7 +49,7 @@ class Booster:
     options: Optional[Mapping[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        """The booster in the API's wire form."""
+        """The booster in the API's object form, each setting only when given."""
         out: Dict[str, Any] = {"name": self.name}
         if self.images is not None:
             out["images"] = list(self.images) if isinstance(self.images, (list, tuple)) else self.images
@@ -58,6 +58,13 @@ class Booster:
         if self.options is not None:
             out["options"] = dict(self.options) if isinstance(self.options, Mapping) else self.options
         return out
+
+    def wire(self) -> Union[str, Dict[str, Any]]:
+        """The booster as it is sent: its name alone when no setting is given, so a list
+        of such boosters is the plain list of names; else the object form."""
+        if self.images is None and self.require is None and self.options is None:
+            return self.name
+        return self.to_dict()
 
 
 BoosterInput = Union[str, Booster, Mapping[str, Any]]
@@ -74,10 +81,10 @@ def booster_wire(boosters: Any) -> Any:
     if boosters is None:
         return None
     if isinstance(boosters, Booster):
-        return boosters.to_dict()
+        return boosters.wire()
     if isinstance(boosters, (str, bytes, Mapping)) or not isinstance(boosters, Iterable):
         return boosters
-    items = [b.to_dict() if isinstance(b, Booster) else b for b in boosters]
+    items = [b.wire() if isinstance(b, Booster) else b for b in boosters]
     return items or None
 
 
@@ -177,6 +184,9 @@ class Evidence:
         latency_ms: How long the booster took, in milliseconds.
         results: One reading per image read; empty unless ``status`` is ``ok``.
         raw: The entry exactly as received.
+        billed_calls: The calls of this booster billed on this request (a picture it read
+            for the workspace in the last hour is not billed again); ``None`` when the
+            server did not send it.
     """
 
     version: Optional[str]
@@ -184,6 +194,7 @@ class Evidence:
     latency_ms: Optional[Union[int, float]]
     results: List[AnyReading]
     raw: Dict[str, Any] = field(repr=False)
+    billed_calls: Optional[int] = None
 
 
 class _Malformed(Exception):
@@ -299,13 +310,14 @@ def parse_evidence(value: Any) -> Optional[Dict[str, Evidence]]:
             continue
         raw = dict(entry)
         version, status, latency = raw.get("version"), raw.get("status"), raw.get("latency_ms")
-        results = raw.get("results")
+        results, billed = raw.get("results"), raw.get("billed_calls")
         out[name] = Evidence(
             version=version if isinstance(version, str) else None,
             status=status if isinstance(status, str) else None,
             latency_ms=latency if _is_number(latency) else None,
             results=[parse_reading(name, r) for r in results] if isinstance(results, list) else [],
             raw=raw,
+            billed_calls=billed if isinstance(billed, int) and not isinstance(billed, bool) else None,
         )
     return out
 
