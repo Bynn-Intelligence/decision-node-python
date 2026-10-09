@@ -425,10 +425,12 @@ before any charge. A booster added to the API works with this version of the pac
 | `AiGeneratedReading` | `image`, `generated` (the probability that a generator made the picture), `confidence`, `method` (`inference`: read from the pixels; `c2pa`: the file's trusted Content Credentials declare it generated or edited by AI), `top_generator` (`name`, `probability` of the likeliest generator when the reading says likely generated; `None` otherwise, and always on a `c2pa` reading), `c2pa_signer` (who signed the file's Content Credentials when they are trusted, else `None`), `c2pa` (`untrusted` when the file carries Content Credentials that validate but are not trusted, which change nothing in the reading; else `None`) |
 | `UnknownReading` | `image` and `raw`: a reading of a booster this version does not know, or one with a field missing or of the wrong type. The decision does not fail |
 
-A booster call is billed at USD 0.002, one per booster and image read with status `ok`,
-from your prepaid balance with the request's tokens; a booster that timed out or failed is
-free, and so are the boosters of a refused request. The readings' tokens are input tokens
-at the model's price.
+Booster calls are billed from your prepaid balance with the request's tokens, one per
+booster and image read with status `ok`: a picture the same booster read for your workspace
+in the last hour is not billed again, a booster that timed out or failed is free, and so
+are the boosters of a refused request. The readings' tokens are input tokens at the model's
+price. The price per call is on the
+[pricing page](https://decisionnode.com/docs/pricing#boosters).
 
 | Status | `error_type` | Exception |
 |---|---|---|
