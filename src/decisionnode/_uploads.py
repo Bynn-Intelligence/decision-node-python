@@ -84,6 +84,11 @@ class UploadCache:
                 del self._items[key]
 
 
+# Stands for an upload id ("upl_" and 32 characters) when a body is measured before its
+# images are uploaded.
+UPLOAD_ID_PLACEHOLDER = "upl_" + "0" * 32
+
+
 class ImagePlan:
     """How the images of one request (or frame, or batch line) go out.
 
@@ -107,6 +112,18 @@ class ImagePlan:
         if self.strip_id:
             return {"upload_id": upload_id}
         return {"id": img.id, "upload_id": upload_id}
+
+    def project(self) -> List[Dict[str, Any]]:
+        """The wire forms with each image still to upload named by a placeholder of an
+        upload id's length, so the body's size is known before anything is uploaded."""
+        wires = list(self.wires)
+        for index, img in self.pending:
+            wires[index] = (
+                {"upload_id": UPLOAD_ID_PLACEHOLDER}
+                if self.strip_id
+                else {"id": img.id, "upload_id": UPLOAD_ID_PLACEHOLDER}
+            )
+        return [w for w in wires if w is not None]
 
     def finish(self, uploaded: Mapping[CacheKey, str]) -> List[Dict[str, Any]]:
         for index, img in self.pending:

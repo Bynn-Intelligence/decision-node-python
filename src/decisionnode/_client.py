@@ -89,6 +89,7 @@ from ._uploads import (
 )
 from ._validate import (
     MAX_UPLOAD_FILES,
+    check_body_size,
     check_frame,
     check_images,
     check_lines,
@@ -332,6 +333,35 @@ class _Prepared:
         self.content: Optional[bytes] = None
 
 
+class _Line:
+    """One batch request, checked and planned. ``content`` is the line as sent when none of
+    its images has to be uploaded; otherwise it is written once the uploads are done."""
+
+    __slots__ = ("req", "questions", "videos", "boosters", "plan", "content")
+
+    def __init__(
+        self, req: Any, questions: Dict[str, Any], videos: List[Dict[str, Any]], boosters: Any, plan: ImagePlan
+    ) -> None:
+        self.req = req
+        self.questions = questions
+        self.videos = videos
+        self.boosters = boosters
+        self.plan = plan
+        self.content: Optional[bytes] = None
+
+    def encode(self, wires: Sequence[Mapping[str, Any]], model: str) -> bytes:
+        return line_bytes(self.req, self.questions, wires, model, self.videos, self.boosters)
+
+    def measure(self, model: str) -> None:
+        """The API's body limit on the line as sent (its custom_id included, its line
+        break not), its uploads named by a placeholder."""
+        if self.plan.uploads:
+            check_body_size(len(self.encode(self.plan.project(), model)) - 1)
+        else:
+            self.content = self.encode(self.plan.finish({}), model)
+            check_body_size(len(self.content) - 1)
+
+
 class _Common:
     _settings: Settings
     _cache: UploadCache
@@ -429,11 +459,13 @@ class _Common:
         plan = self._plan(imgs)
         prep.plan = plan
         if plan.uploads:
-            # Written once the uploads are done; written now without the images, so a
-            # value that cannot be sent as JSON fails before anything is uploaded.
-            self._body(prep, [])
+            # Written once the uploads are done; measured now with the uploads named by a
+            # placeholder, so a body over the limit, or a value that cannot be sent as
+            # JSON, fails before anything is uploaded.
+            check_body_size(len(self._body(prep, plan.project())))
         else:
             prep.content = self._body(prep, plan.finish({}))
+            check_body_size(len(prep.content))
         return prep
 
     def _check_decision(
@@ -443,7 +475,6 @@ class _Common:
         images: Any,
         model: Optional[str],
         path: str,
-        encode: bool = False,
         videos: Any = None,
         boosters: Any = None,
     ) -> Tuple[Dict[str, Any], List[Any], List[Dict[str, Any]], Any]:
@@ -463,10 +494,6 @@ class _Common:
         check_request(probe, limits, image_ids=_image_ids(imgs), tail=count_entries(imgs, vids, limits))
         check_images(imgs, limits)
         check_videos(vids, imgs)
-        if encode:
-            # A value that cannot be sent as JSON is an argument error, found now too.
-            _base.encode(probe)
-            _base.encode(vids)
         return qs, imgs, vids, bsts
 
     def _body(self, prep: _Prepared, wires: Sequence[Mapping[str, Any]]) -> bytes:
@@ -530,15 +557,15 @@ class _Common:
             unknown = set(arguments) - _base.DECIDE_KEYS
             if unknown:
                 raise TypeError("%s() got unexpected arguments %s" % (method, ", ".join(sorted(unknown))))
-            self._check_decision(
+            # Prepared as decide prepares it (planned, encoded and measured), never sent.
+            self._prepare(
                 arguments.get("state", UNSET),
                 arguments.get("questions"),
                 arguments.get("images"),
                 arguments.get("model"),
                 _base.DECIDE_PATH,
-                encode=True,
-                videos=arguments.get("videos"),
-                boosters=arguments.get("boosters"),
+                arguments.get("videos"),
+                arguments.get("boosters"),
             )
         elif method == "open_session":
             unknown = set(arguments) - SESSION_KEYS
@@ -564,10 +591,9 @@ class _Common:
                 "check_request() takes decide, open_session, batches.create or batches.add, got %r" % (method,)
             )
 
-    def _check_lines(
-        self, items: List[Any], allow_empty: bool
-    ) -> List[Tuple[Any, Dict[str, Any], List[Any], List[Dict[str, Any]], Any]]:
-        """The local checks of a batch call's requests, before anything is sent or uploaded."""
+    def _check_lines(self, items: List[Any], allow_empty: bool) -> List[_Line]:
+        """The local checks of a batch call's requests, before anything is sent or uploaded:
+        each line's fixed rules, then its size as it will be sent."""
         check_lines(items, allow_empty, self._limits())
         checked = []
         for i, req in enumerate(items, start=1):
@@ -590,7 +616,9 @@ class _Common:
             check_request(probe, limits, image_ids=_image_ids(imgs), tail=count_entries(imgs, vids, limits))
             check_images(imgs, limits)
             check_videos(vids, imgs)
-            checked.append((req, qs, imgs, vids, bsts))
+            line = _Line(req, qs, vids, bsts, self._plan(imgs))
+            line.measure(self._settings.model)
+            checked.append(line)
         return checked
 
     def __repr__(self) -> str:
@@ -1275,11 +1303,12 @@ class Batches:
 
     def _lines(self, requests: Iterable[BatchRequest], allow_empty: bool = True) -> List[bytes]:
         client = self._client
-        checked = client._check_lines(list(requests), allow_empty)
+        model = client._settings.model
         out = []
-        for req, qs, imgs, vids, bsts in checked:
-            plan = client._plan(imgs)
-            out.append(line_bytes(req, qs, client._finish(plan), client._settings.model, vids, bsts))
+        for line in client._check_lines(list(requests), allow_empty):
+            if line.content is None:
+                line.content = line.encode(client._finish(line.plan), model)
+            out.append(line.content)
         return out
 
     def create(self, requests: Iterable[BatchRequest] = ()) -> Batch:
@@ -1884,11 +1913,12 @@ class AsyncBatches:
 
     async def _lines(self, requests: Iterable[BatchRequest], allow_empty: bool = True) -> List[bytes]:
         client = self._client
-        checked = client._check_lines(list(requests), allow_empty)
+        model = client._settings.model
         out = []
-        for req, qs, imgs, vids, bsts in checked:
-            plan = client._plan(imgs)
-            out.append(line_bytes(req, qs, await client._finish(plan), client._settings.model, vids, bsts))
+        for line in client._check_lines(list(requests), allow_empty):
+            if line.content is None:
+                line.content = line.encode(await client._finish(line.plan), model)
+            out.append(line.content)
         return out
 
     async def create(self, requests: Iterable[BatchRequest] = ()) -> Batch:

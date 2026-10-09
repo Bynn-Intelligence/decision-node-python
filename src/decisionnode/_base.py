@@ -27,6 +27,7 @@ from ._errors import (
     PermissionDeniedError,
     RateLimitError,
     RefusalError,
+    RequestTooLargeError,
     ServerError,
     SessionLimitError,
     ValidationError,
@@ -440,6 +441,8 @@ def make_error(status: int, headers: Mapping[str, str], text: str) -> DecisionNo
         return PermissionDeniedError(message, **kwargs)
     if status == 404:
         return NotFoundError(message, **kwargs)
+    if status == 413:
+        return RequestTooLargeError(message, **kwargs)
     if status == 422:
         return ValidationError(message, entries=entries, **kwargs)
     if status == 429:

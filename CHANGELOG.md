@@ -18,14 +18,19 @@ Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`).
 - `Decision.evidence`: booster name to `Evidence` (`version`, `status`, `latency_ms`,
   `results`), with `AgeReading`, `AiGeneratedReading` (its `TopGenerator`, `None` unless
   the reading says likely generated, `c2pa_signer`, and `c2pa`, `untrusted` for Content
-  Credentials that validate but are not trusted) and `UnknownReading` for a reading of a booster this version does not know or with a field
-  missing or of the wrong type. `None` when the request named no boosters.
+  Credentials that validate but are not trusted) and `UnknownReading` for a reading of a
+  booster this version does not know or with a field missing or of the wrong type. `None`
+  when the request named no boosters.
 - `Decision.usage.booster_tokens` and `Decision.usage.boosters` (`None` when absent).
 - `DecisionNodeError.boosters`: the `x-decisionnode-boosters` header as booster name to
   `BoosterStatus` (`status`, `latency_ms`), on every error; empty when the header is absent.
 - Fine-tuned models: `ModelInfo.fine_tuned`, `base`, `adapter_version` and `status`
   (`None` on the catalogue's own entries). A fine-tuned model's name is sent as given, and
   `Decision.model` is the pinned name that answered.
+- `RequestTooLargeError` for the API's 25 MiB request body limit: raised for every 413,
+  never retried, and before anything is sent or uploaded when a request, a `decide_many`
+  request or a batch line is over 26,214,400 bytes as it will be sent (images to upload
+  counted by their `upload_id`). `check_request` measures it too.
 
 ### Changed
 

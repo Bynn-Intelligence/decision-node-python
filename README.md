@@ -220,6 +220,13 @@ How local images travel is chosen for speed:
   an upload as expired or gone, the client uploads the image again and sends the request
   once more.
 
+A request body may be at most 25 MiB (26,214,400 bytes). Inline images count toward it;
+uploaded images and URLs do not. The client measures each request as it will be sent,
+`decide_many` requests and batch lines included, and raises `RequestTooLargeError` before
+anything is sent or uploaded when it is over. Images given as a path or bytes above the
+inline threshold are uploaded, so only a large state or base64 data you send yourself can
+reach the limit.
+
 An `Image` can be reused across calls; its checks and hashes are computed once.
 
 ### Upload ahead
@@ -602,6 +609,7 @@ server sent none, never `None`), or the client's description when no response ar
 | 403 | `RefusalError`: refused under the usage policy | `category`, `safety` |
 | 403, not a refusal | `PermissionDeniedError`: your workspace may not do this, for example use a booster that is turned off for it | |
 | 404 | `NotFoundError` | |
+| 413 | `RequestTooLargeError`: the body is over 25 MiB; never retried (also raised before sending) | |
 | 422 | `ValidationError` | `entries` |
 | 429 | `RateLimitError`; `SessionLimitError` for too many open sessions | `retry_after` (seconds) |
 | 529 | `OverloadedError`, also when a required booster failed (`error_type` `booster_unavailable`) | `retry_after` (seconds) |
@@ -634,6 +642,8 @@ same class, `error_type`, message, and for a `ValidationError` the same `entries
 with no `status` and no `request_id`. The checks run in the API's order:
 
 - more than 128 objects and arrays inside each other (`BadRequestError`, "Invalid request.");
+- a body over 25 MiB as it will be sent (`RequestTooLargeError`, `error_type`
+  `request_too_large_error`);
 - the shape of each question and of the state (`ValidationError`): a question that is not
   an object or has no `type`, values that must be a string, an object or an array, a
   choice or score without `criteria`, a score without levels, and every number grid rule;

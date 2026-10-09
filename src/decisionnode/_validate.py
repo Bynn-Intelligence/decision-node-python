@@ -16,7 +16,7 @@ from decimal import Decimal
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 from urllib.parse import urlsplit
 
-from ._errors import BadRequestError, ValidationError
+from ._errors import BadRequestError, RequestTooLargeError, ValidationError
 from ._images import MAX_IMAGE_BYTES, MAX_URL_CHARS, MEDIA_TYPES, Image
 from ._types import LEGACY_TRUTH
 
@@ -39,6 +39,12 @@ MAX_GRID_VALUES = 4096
 NUMBER_MAX_DECIMALS = 6
 TWO_53 = 2**53
 MAX_NESTING = 128
+# The API's request body limit, 25 MiB: inline images count, uploads and URLs do not.
+MAX_BODY_BYTES = 26_214_400
+BODY_TOO_LARGE = (
+    "The request body is over 26,214,400 bytes (25 MiB). "
+    "Send large images as uploads (POST /v1/uploads) and name them by upload_id."
+)
 MAX_WINDOW = 64
 MAX_TTL_SECONDS = 3600
 MAX_SEQ = 2**53 - 1
@@ -74,6 +80,16 @@ def _ascii(text: str) -> str:
 def usage_error(message: str, reason: Optional[str] = None) -> BadRequestError:
     """A 400 ``api_usage_error`` raised before any request."""
     return BadRequestError(message, error_type="api_usage_error", reason=_ascii(reason or message))
+
+
+def check_body_size(size: int) -> None:
+    """The API's body limit, against the size of the body exactly as it will be sent."""
+    if size > MAX_BODY_BYTES:
+        raise RequestTooLargeError(
+            BODY_TOO_LARGE,
+            error_type="request_too_large_error",
+            reason="the body is %d bytes; the limit is %d" % (size, MAX_BODY_BYTES),
+        )
 
 
 def _plain_400(message: str, reason: str) -> BadRequestError:

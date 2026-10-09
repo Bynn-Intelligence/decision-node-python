@@ -25,6 +25,7 @@ __all__ = [
     "RefusalError",
     "PermissionDeniedError",
     "NotFoundError",
+    "RequestTooLargeError",
     "ValidationError",
     "RateLimitError",
     "SessionLimitError",
@@ -144,6 +145,13 @@ class PermissionDeniedError(DecisionNodeError):
 
 class NotFoundError(DecisionNodeError):
     """404: the path does not exist."""
+
+
+class RequestTooLargeError(DecisionNodeError):
+    """413, or found before sending: the request body is over the API's limit of
+    26,214,400 bytes (25 MiB). Never retried. Send large images as uploads and name them
+    by ``upload_id``; images given as a path or bytes over the inline threshold already
+    are."""
 
 
 class ValidationError(DecisionNodeError):
