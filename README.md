@@ -595,7 +595,7 @@ can take at once is answered by `decisionnode-1.0-flash` instead, billed at its 
 ```python
 d = dn.decide(state=ticket, questions=questions, model="decisionnode-1.0")
 if d.fallback is not None:
-    d.fallback.served_model     # "decisionnode-1.0-flash"
+    d.fallback.served_model  # "decisionnode-1.0-flash"
     d.fallback.requested_model  # "decisionnode-1.0"
 ```
 
