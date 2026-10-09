@@ -406,7 +406,7 @@ class _Common:
         check_frame(frame, image, questions, reset, seq, known if isinstance(known, list) else None)
         if image is not None:
             probe = dict(image, id=image.get("id") or "frame") if isinstance(image, Mapping) else image
-            check_images([probe], self._limits(session.model))
+            check_images([probe], self._limits(session.model), id_length=False)
         return questions
 
     @property

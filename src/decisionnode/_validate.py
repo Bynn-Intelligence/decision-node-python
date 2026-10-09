@@ -686,10 +686,12 @@ def count_entries(images: Sequence[Any], videos: Sequence[Any], limits: Optional
     return out
 
 
-def check_images(images: Sequence[Any], limits: Optional[Limits] = None) -> None:
+def check_images(images: Sequence[Any], limits: Optional[Limits] = None, id_length: bool = True) -> None:
     """Raise what the API would answer for these images: their ids, URLs, the media type
     of an upload reference, and for local bytes the format, size and pixels. Their count
-    is a 422 entry of the request (``count_entries``)."""
+    is a 422 entry of the request (``count_entries``). ``id_length`` is the 64-character
+    id rule, for a body that carries the ids; a session frame's image is sent without its
+    id, so a frame skips it."""
     held: Limits = limits or {}
     biggest = held.get("max_image_bytes") or MAX_IMAGE_BYTES
     seen: Set[str] = set()
@@ -702,7 +704,7 @@ def check_images(images: Sequence[Any], limits: Optional[Limits] = None) -> None
             raise ValueError("images must be Image objects or wire-form mappings, got %r" % (img,))
         if not isinstance(iid, str) or iid == "":
             raise usage_error("Image %d needs an id." % i)
-        if len(iid) > MAX_IMAGE_ID_CHARS:
+        if id_length and len(iid) > MAX_IMAGE_ID_CHARS:
             raise usage_error("Image %d: its id is longer than %d characters." % (i, MAX_IMAGE_ID_CHARS))
         if iid in seen:
             raise usage_error("Duplicate image id: %s" % iid)

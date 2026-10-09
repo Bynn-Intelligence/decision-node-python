@@ -425,6 +425,8 @@ class TestChecks:
         with pytest.raises(dn.BadRequestError, match="unknown question id 'speed'"):
             session.check_frame("a", questions=["speed"])
         assert session.check_frame(image=dn.Image("f", data=BIG)) is None
+        # A frame's image is sent without its id, so the 64-character id rule does not apply.
+        assert session.check_frame(image=dn.Image("f" * 65, data=BIG)) is None
         assert len(h.recorder.requests) == 1  # the open only; nothing uploaded
 
     def test_held_limits_by_alias_and_version(self, mode: str) -> None:
