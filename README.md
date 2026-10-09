@@ -416,7 +416,7 @@ before any charge. A booster added to the API works with this version of the pac
 | `version` | The version of the booster that read, such as `age-v3` |
 | `status` | `ok`; `timeout` (no answer in time); `error`; `skipped` (none of the request's images is one it reads) |
 | `latency_ms` | How long the booster took |
-| `billed_calls` | The calls of this booster billed on this request; a picture it read for your workspace in the last hour is not billed again |
+| `billed_calls` | The calls of this booster billed on this request |
 | `results` | One reading per image read, each naming its `image`; empty unless `status` is `ok` |
 
 | Reading | Fields |
@@ -426,8 +426,7 @@ before any charge. A booster added to the API works with this version of the pac
 | `UnknownReading` | `image` and `raw`: a reading of a booster this version does not know, or one with a field missing or of the wrong type. The decision does not fail |
 
 Booster calls are billed from your prepaid balance with the request's tokens, one per
-booster and image read with status `ok`: a picture the same booster read for your workspace
-in the last hour is not billed again, a booster that timed out or failed is free, and so
+booster and image read with status `ok`: a booster that timed out or failed is free, and so
 are the boosters of a refused request. The readings' tokens are input tokens at the model's
 price. The price per call is on the
 [pricing page](https://decisionnode.com/docs/pricing#boosters).

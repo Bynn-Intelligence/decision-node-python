@@ -184,8 +184,7 @@ class Evidence:
         latency_ms: How long the booster took, in milliseconds.
         results: One reading per image read; empty unless ``status`` is ``ok``.
         raw: The entry exactly as received.
-        billed_calls: The calls of this booster billed on this request (a picture it read
-            for the workspace in the last hour is not billed again); ``None`` when the
+        billed_calls: The calls of this booster billed on this request; ``None`` when the
             server did not send it.
     """
 
