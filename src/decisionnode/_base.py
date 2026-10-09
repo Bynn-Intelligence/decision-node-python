@@ -252,7 +252,10 @@ def decide_body(
     model: Optional[str],
     default_model: str,
     videos: Sequence[Mapping[str, Any]] = (),
+    boosters: Any = None,
 ) -> Dict[str, Any]:
+    """The decide body. ``boosters`` is the field as sent (``booster_wire``); ``None``
+    leaves the key out, so a request without boosters is unchanged."""
     body: Dict[str, Any] = {
         "model": model or default_model,
         "state": "" if state is None or state is UNSET else state,
@@ -262,10 +265,12 @@ def decide_body(
         body["images"] = list(wires)
     if videos:
         body["videos"] = list(videos)
+    if boosters is not None:
+        body["boosters"] = boosters
     return body
 
 
-DECIDE_KEYS = frozenset({"state", "questions", "images", "videos", "model"})
+DECIDE_KEYS = frozenset({"state", "questions", "images", "videos", "model", "boosters"})
 
 
 def should_retry(policy: str, status: int, error: DecisionNodeError) -> bool:

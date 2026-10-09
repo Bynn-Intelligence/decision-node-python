@@ -136,9 +136,11 @@ The thresholds are yours: the SDK never turns a probability into a decision.
 | Field | |
 |---|---|
 | `answers` | The answers by question id. `d["route"]` is `d.answers["route"]`. |
-| `model` | The model version that answered. |
+| `model` | The model version that answered; for a fine-tuned model its pinned name (below). |
 | `usage.input_tokens`, `usage.output_tokens` | Token counts, or `None` when the server sent none (never `0` in their place). |
 | `usage.video_frames`, `usage.video_seconds` | For a request with videos: the frames the server read and the seconds of video they cover; `None` otherwise. |
+| `usage.booster_tokens`, `usage.boosters` | For a request with boosters: the share of `input_tokens` the boosters' readings take, and the booster calls billed; `None` otherwise. |
+| `evidence` | For a request with boosters: what each booster read (below); `None` otherwise. |
 | `warnings` | What the server changed when it read the request's videos (a lower rate or size), as sent; an empty list when there is nothing to say. |
 | `request_id` | The request id. Quote it when you contact support. |
 | `latency_ms` | The server's own time for the request, or `None` when the server sent none. |
@@ -336,6 +338,95 @@ To turn a video file into frames, use the `dn` command-line tool (`dn truth "Doe
 fall?" --video dock.mp4 --fps 2`); it runs FFmpeg on your machine and sends only the frames.
 This package has no such dependency.
 
+## Boosters
+
+A booster is a specialist model that reads the request's images before the decision. Its
+reading is added to what the model sees, and comes back in `evidence`. The model still
+answers every question: a booster never answers one, and a request without boosters is
+answered exactly as before.
+
+| Booster | Reads | Tells the model |
+|---|---|---|
+| `age` | A picture of a person | How old the person is, with a range and a confidence (the largest face is read) |
+| `ai_generated` | Any picture | How likely the picture was made by an image generator, which generator most likely, and whether the file carries Content Credentials (C2PA) and who signed them |
+
+```python
+from decisionnode import Booster, Image, truth
+
+d = dn.decide(
+    images=[
+        Image("a1b2", url="https://files.example.com/a1b2.jpg"),
+        Image("c3d4", url="https://files.example.com/c3d4.jpg"),
+    ],
+    boosters=["age", Booster("ai_generated", images=["c3d4"], require=True)],
+    questions={
+        "adult": truth("Is the person in the first picture an adult?"),
+        "synthetic": truth("Is the second picture AI-generated?"),
+    },
+)
+
+d["adult"].truth  # 0.97
+age = d.evidence["age"]
+age.status, age.version  # "ok", "age-v3"
+age.results[0].age_years, age.results[0].low, age.results[0].high  # 27, 22, 33
+d.evidence["ai_generated"].results[0].generated  # 0.93
+d.usage.booster_tokens, d.usage.boosters  # 72, 3
+```
+
+`boosters` is a list of booster names and `Booster` objects, in the order you want them
+reported; a plain wire-form mapping (`{"booster": "age"}`) works too. `decide`, the
+helpers, `decide_many` requests and batch requests take it. Sessions do not.
+
+| Argument | |
+|---|---|
+| `Booster(name, images=None, require=None, options=None)` | `images`: the ids of the request's images the booster reads; left out, every image. `require=True`: a booster that fails or does not answer in time fails the request with `OverloadedError` (`error_type` `booster_unavailable`), which is retried like every 529; left out, the decision runs without that reading and `evidence` says why. `options`: settings of a booster, for boosters that have any |
+
+The client checks nothing about boosters itself: the API answers a malformed list, an
+unknown name and a booster turned off for your workspace before any booster runs and
+before any charge. A booster added to the API works with this version of the package.
+
+`d.evidence` maps each booster the request named, in its order, to an `Evidence`:
+
+| Field | |
+|---|---|
+| `version` | The version of the booster that read, such as `age-v3` |
+| `status` | `ok`; `timeout` (no answer in time); `error`; `skipped` (none of the request's images is one it reads) |
+| `latency_ms` | How long the booster took |
+| `results` | One reading per image read, each naming its `image`; empty unless `status` is `ok` |
+
+| Reading | Fields |
+|---|---|
+| `AgeReading` | `image`, `faces` (how many faces were found; the largest is read), and `age_years`, `low`, `high`, `confidence`, each `None` when `faces` is 0 |
+| `AiGeneratedReading` | `image`, `generated` (the probability that a generator made the picture), `confidence`, `method` (`inference`: read from the pixels; `c2pa`: the file's Content Credentials say so), `top_generator` (`name`, `probability`), `c2pa_signer` (who signed the Content Credentials, or `None`) |
+| `UnknownReading` | `image` and `raw`: a reading of a booster this version does not know, or one with a field missing or of the wrong type. The decision does not fail |
+
+A booster call is billed at USD 0.002, one per booster and image read with status `ok`,
+from your prepaid balance with the request's tokens; a booster that timed out or failed is
+free, and so are the boosters of a refused request. The readings' tokens are input tokens
+at the model's price.
+
+| Status | `error_type` | Exception |
+|---|---|---|
+| 400 | `api_usage_error`: `boosters` malformed (not a list, more than 4 entries, a booster named twice, an unknown key in `options`); the reason is in `e.reason` | `BadRequestError` |
+| 400 | `booster_unknown`: a name that is not a booster | `BadRequestError` |
+| 400 | `booster_input_mismatch`: a booster that reads images on a request without any, or an `images` entry that is not an image of the request | `BadRequestError` |
+| 403 | `booster_not_enabled`: the booster is turned off for your workspace | `PermissionDeniedError` |
+| 529 | `booster_unavailable`: a booster with `require=True` failed or did not answer in time | `OverloadedError`, retried |
+
+Every error of a request that named boosters carries `e.boosters`: what each booster did,
+in the request's order, as booster name to `BoosterStatus` (`status`, `latency_ms`), so you
+can see which required booster failed.
+
+```python
+from decisionnode import OverloadedError
+
+try:
+    d = dn.decide(images=images, boosters=[Booster("age", require=True)], questions=questions)
+except OverloadedError as e:
+    if e.error_type == "booster_unavailable":
+        print(e.boosters["age"].status)  # "timeout"
+```
+
 ## Sessions
 
 A session fixes the questions once, then answers every frame you send on a WebSocket,
@@ -472,9 +563,32 @@ Choose per client (`DecisionNode(model="decisionnode-flash-latest")`) or per cal
 (`dn.decide(..., model="decisionnode-1.0")`). Each model publishes its limits in
 `models()`.
 
+### Fine-tuned models
+
+A model your workspace trained in the console is called by its name, by your workspace's
+keys only, and answers like its base: the same question types, answers, limits and
+errors.
+
+```python
+d = dn.decide(state=claim, questions=questions, model="decisionnode-1.0-flash@acme/fraud")
+d.model  # "decisionnode-1.0-flash@acme/fraud:3", the version that answered
+```
+
+The name is `<base>@<workspace>/<name>`, which means the version deployed most recently,
+or `<base>@<workspace>/<name>:<n>` for version `n`. The client sends it as given; a name
+that does not exist, a version that is not deployed and another workspace's model all
+raise `BadRequestError` (`Unknown model: <name>`). `Decision.model` is always the pinned
+name, so you can log which version answered.
+
+`models()` lists your workspace's fine-tuned models beside the catalogue's, each with
+`fine_tuned` (`True`), `base` (the base model), `adapter_version` (the version number) and
+`status` (`deployed`, which answers decisions, or `ready`: trained and not deployed). On
+the catalogue's own entries these four are `None`.
+
 ## Errors
 
-Every error derives from `DecisionNodeError`, with `status`, `error_type`, `request_id`
+Every error derives from `DecisionNodeError`, with `status`, `error_type`, `request_id`,
+`boosters` (for a request with boosters, what each booster did; an empty mapping otherwise)
 and `reason`: the server's explanation in words, from the `x-decisionnode-error` header,
 for example `question 'q': a score takes up to 10 levels, got 11`. The error's own
 message, `str(e)` (also `e.message`), is the server's `message` exactly (`""` when the
@@ -486,11 +600,11 @@ server sent none, never `None`), or the client's description when no response ar
 | 401 | `AuthenticationError` (also raised before sending when no key is set) | |
 | 402 | `InsufficientCreditError` | |
 | 403 | `RefusalError`: refused under the usage policy | `category`, `safety` |
-| 403, not a refusal | `PermissionDeniedError`: the key may not do this | |
+| 403, not a refusal | `PermissionDeniedError`: your workspace may not do this, for example use a booster that is turned off for it | |
 | 404 | `NotFoundError` | |
 | 422 | `ValidationError` | `entries` |
 | 429 | `RateLimitError`; `SessionLimitError` for too many open sessions | `retry_after` (seconds) |
-| 529 | `OverloadedError` | `retry_after` (seconds) |
+| 529 | `OverloadedError`, also when a required booster failed (`error_type` `booster_unavailable`) | `retry_after` (seconds) |
 | other 5xx, a 2xx whose body is not JSON, or a helper's own answer missing or malformed | `ServerError` | |
 | 3xx and every other status | `DecisionNodeError` itself, with `status` | |
 | no response | `ConnectionError`, `TimeoutError` | |
@@ -707,7 +821,7 @@ The tests include the DecisionNode SDK conformance suite
 (`Bynn-Intelligence/decision-node-conformance`), run with both the sync and the async
 client. Set `DECISIONNODE_CONFORMANCE_DIR` to a checkout of it, or check it out at
 `conformance/` in this repository; without it the conformance tests fail rather than
-skip. The tests pass suite 1.10; CI checks the suite out at the commit pinned in
+skip. The tests pass suite 1.11; CI checks the suite out at the commit pinned in
 `CONFORMANCE_REF` in `.github/workflows/ci.yml`, with every action pinned to a commit SHA
 and no checkout keeping its credentials.
 

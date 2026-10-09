@@ -238,4 +238,4 @@ def test_sixteen_images_one_presign(mode: str) -> None:
 
 
 def test_spec_version() -> None:
-    assert dn.SPEC_VERSION == "1.2"
+    assert dn.SPEC_VERSION == "1.3"

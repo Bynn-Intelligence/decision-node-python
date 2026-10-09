@@ -9,7 +9,9 @@ when no response was received.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional
+
+from ._boosters import BoosterStatus, header, parse_boosters
 
 if TYPE_CHECKING:
     from ._types import Safety
@@ -52,6 +54,10 @@ class DecisionNodeError(Exception):
             header, for example ``question 'q': a score takes up to 10 levels, got 11``.
         body: The parsed error body, or its text when it is not JSON.
         headers: The response headers, with lower-case names.
+        boosters: For a request that named boosters, what each booster did, from the
+            ``x-decisionnode-boosters`` header: booster name to :class:`BoosterStatus`, in
+            the request's order, so a caller can see which required booster failed.
+            Empty when the header is absent.
     """
 
     def __init__(
@@ -71,6 +77,7 @@ class DecisionNodeError(Exception):
         self.reason = reason
         self.body = body
         self.headers: dict[str, str] = dict(headers or {})
+        self.boosters: Dict[str, BoosterStatus] = parse_boosters(header(self.headers))
         super().__init__(message if isinstance(message, str) else "")
 
     @property
@@ -131,7 +138,8 @@ class RefusalError(DecisionNodeError):
 
 
 class PermissionDeniedError(DecisionNodeError):
-    """403 that is not a refusal: the key may not do this, for example use that model."""
+    """403 that is not a refusal: the workspace may not do this, for example use a booster
+    that is turned off for it (``error_type`` ``booster_not_enabled``). Never retried."""
 
 
 class NotFoundError(DecisionNodeError):
@@ -172,7 +180,8 @@ class SessionLimitError(RateLimitError):
 
 
 class OverloadedError(DecisionNodeError):
-    """529: the server is overloaded.
+    """529: the server is overloaded, or (``error_type`` ``booster_unavailable``) a booster
+    the request required failed or did not answer in time. Retried like every 529.
 
     Attributes:
         retry_after: Seconds the server asked to wait, capped at 60, or ``None``.

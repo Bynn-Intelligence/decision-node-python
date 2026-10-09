@@ -93,7 +93,7 @@ def test_empty_model_per_call_uses_client_model(mode: str) -> None:
 
 
 def test_spec_version() -> None:
-    assert dn.SPEC_VERSION == "1.2"
+    assert dn.SPEC_VERSION == "1.3"
     assert dn.DEFAULT_INLINE_THRESHOLD == 524_288
 
 

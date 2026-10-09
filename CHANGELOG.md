@@ -4,6 +4,34 @@ All notable changes to this package are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - Unreleased
+
+Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`).
+
+### Added
+
+- Boosters: `boosters` on `decide`, `check`, `classify`, `score`, `number`, `gate`,
+  `decide_many` requests, batch requests and `check_request`, as booster names,
+  `Booster(name, images, require, options)` objects or wire-form mappings, sent in the
+  order given. Left out or empty, the request has no `boosters` field. The client checks
+  nothing about boosters itself; the API answers. Sessions take no boosters.
+- `Decision.evidence`: booster name to `Evidence` (`version`, `status`, `latency_ms`,
+  `results`), with `AgeReading`, `AiGeneratedReading` (and its `TopGenerator`) and
+  `UnknownReading` for a reading of a booster this version does not know or with a field
+  missing or of the wrong type. `None` when the request named no boosters.
+- `Decision.usage.booster_tokens` and `Decision.usage.boosters` (`None` when absent).
+- `DecisionNodeError.boosters`: the `x-decisionnode-boosters` header as booster name to
+  `BoosterStatus` (`status`, `latency_ms`), on every error; empty when the header is absent.
+- Fine-tuned models: `ModelInfo.fine_tuned`, `base`, `adapter_version` and `status`
+  (`None` on the catalogue's own entries). A fine-tuned model's name is sent as given, and
+  `Decision.model` is the pinned name that answered.
+
+### Changed
+
+- `PermissionDeniedError` is documented as every 403 that is not a refusal, a booster
+  turned off for the workspace included; `OverloadedError` as also raised, and retried,
+  for a required booster that failed (`booster_unavailable`).
+
 ## [0.2.0] - Unreleased
 
 Implements version 1.2 of the SDK specification (`SPEC_VERSION` is `"1.2"`) and passes

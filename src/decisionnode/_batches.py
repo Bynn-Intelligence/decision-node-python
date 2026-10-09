@@ -199,9 +199,11 @@ def line_bytes(
     wires: Sequence[Mapping[str, Any]],
     model: str,
     videos: Sequence[Mapping[str, Any]] = (),
+    boosters: Any = None,
 ) -> bytes:
     """One JSON Lines line: ``custom_id``, ``model``, ``state`` (``""`` when absent), the
-    questions, the images, the videos, and any other field as given."""
+    questions, the images, the videos, the boosters (``booster_wire``; ``None`` for none),
+    and any other field as given."""
     out: Dict[str, Any] = {
         "custom_id": req["custom_id"],
         "model": req.get("model") or model,
@@ -212,8 +214,10 @@ def line_bytes(
         out["images"] = list(wires)
     if videos:
         out["videos"] = list(videos)
+    if boosters is not None:
+        out["boosters"] = boosters
     for key, value in req.items():
-        if key not in out and key not in ("images", "videos"):
+        if key not in out and key not in ("images", "videos", "boosters"):
             out[key] = value
     return _base.encode(out) + b"\n"
 

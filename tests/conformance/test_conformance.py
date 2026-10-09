@@ -32,7 +32,10 @@ import decisionnode as dn
 
 KINDS = ("requests", "responses", "errors", "behaviour", "constants")
 ENV_VARS = ("DECISIONNODE_API_KEY", "DECISIONNODE_BASE_URL", "DECISIONNODE_MODEL")
-EXACT = {"probabilities", "legend", "raw", "entries", "safety", "body", "limits"}
+EXACT = {"probabilities", "legend", "raw", "entries", "safety", "body", "limits", "evidence", "boosters"}
+# Compared whole and in their key order too: evidence in the request's order, an
+# error's boosters in the header's.
+ORDERED = {"evidence", "boosters"}
 MODES = ("sync", "async")
 REPO = Path(__file__).resolve().parents[2]
 
@@ -171,6 +174,8 @@ def match(expected: Any, actual: Any, path: str) -> None:
             if k in EXACT:
                 if not same(v, actual[k]):
                     raise Fail("%s.%s: expected %s, got %s" % (path, k, short(v), short(actual[k])))
+                if k in ORDERED and isinstance(v, dict) and list(v) != list(actual[k]):
+                    raise Fail("%s.%s: expected the order %s, got %s" % (path, k, list(v), list(actual[k])))
             else:
                 match(v, actual[k], "%s.%s" % (path, k))
         return
@@ -247,6 +252,53 @@ def norm_answer(a: Any) -> Dict[str, Any]:
     return {"kind": "unknown", "type": a.type, "raw": a.raw}
 
 
+def norm_reading(r: Any) -> Dict[str, Any]:
+    if isinstance(r, dn.AgeReading):
+        fields = ("image", "faces", "age_years", "low", "high", "confidence")
+        return dict({"kind": "age"}, **{n: getattr(r, n) for n in fields})
+    if isinstance(r, dn.AiGeneratedReading):
+        top = r.top_generator
+        return {
+            "kind": "ai_generated",
+            "image": r.image,
+            "generated": r.generated,
+            "confidence": r.confidence,
+            "method": r.method,
+            "top_generator": None if top is None else {"name": top.name, "probability": top.probability},
+            "c2pa_signer": r.c2pa_signer,
+        }
+    if not isinstance(r, dn.UnknownReading):
+        raise Fail("reading of class %s is none of the reading types" % type(r).__name__)
+    return {"kind": "unknown", "raw": r.raw}
+
+
+def norm_evidence(evidence: Any) -> Optional[Dict[str, Any]]:
+    if evidence is None:
+        return None
+    return {
+        name: {
+            "version": e.version,
+            "status": e.status,
+            "latency_ms": e.latency_ms,
+            "results": [norm_reading(r) for r in e.results],
+        }
+        for name, e in evidence.items()
+    }
+
+
+def norm_boosters(boosters: Any) -> Dict[str, Any]:
+    return {name: {"status": b.status, "latency_ms": b.latency_ms} for name, b in boosters.items()}
+
+
+def norm_model(m: Any, expected: Any) -> Dict[str, Any]:
+    out = {"name": m.name, "description": m.description, "release_date": m.release_date, "limits": m.limits}
+    # The fine-tuned fields are compared when the case states them.
+    for name in ("fine_tuned", "base", "adapter_version", "status"):
+        if isinstance(expected, dict) and name in expected:
+            out[name] = getattr(m, name)
+    return out
+
+
 def norm_safety(s: Optional[dn.Safety]) -> Optional[Dict[str, Any]]:
     return None if s is None else s.to_dict()
 
@@ -261,7 +313,10 @@ def norm_decision(d: dn.Decision) -> Dict[str, Any]:
             "output_tokens": d.usage.output_tokens,
             "video_frames": d.usage.video_frames,
             "video_seconds": d.usage.video_seconds,
+            "booster_tokens": d.usage.booster_tokens,
+            "boosters": d.usage.boosters,
         },
+        "evidence": norm_evidence(d.evidence),
         "warnings": d.warnings,
         "safety": norm_safety(d.safety),
         "answers": {k: norm_answer(v) for k, v in d.answers.items()},
@@ -282,6 +337,7 @@ def norm_error(e: dn.DecisionNodeError) -> Dict[str, Any]:
         "safety": norm_safety(getattr(e, "safety", None)),
         "entries": getattr(e, "entries", None),
         "retry_after": getattr(e, "retry_after", None),
+        "boosters": norm_boosters(e.boosters),
     }
 
 
@@ -412,6 +468,9 @@ def decode(value: Any, ctx: Dict[str, Any]) -> Any:
             return dn.score(args.get("instructions"), args["levels"])
         if key == "$number":
             return dn.number(args.get("instructions"), args.get("min"), args.get("max"), args.get("step"))
+        if key == "$booster":
+            args = {k: decode(v, ctx) for k, v in args.items()}
+            return dn.Booster(args["name"], **{k: args[k] for k in ("images", "require", "options") if k in args})
         if key == "$point":
             return dn.point(args.get("instructions"), args.get("image"), args.get("units"))
         if key == "$box":
@@ -886,10 +945,8 @@ async def run_response(case: Dict[str, Any], mock: Mock, mode: str, env: pytest.
         match(exp["answer"], norm_answer(result), "answer")
     elif "models" in exp:
         assert all(type(m) is dn.ModelInfo for m in result), "models() must return ModelInfo entries"
-        got = [
-            {"name": m.name, "description": m.description, "release_date": m.release_date, "limits": m.limits}
-            for m in result
-        ]
+        wanted = exp["models"] if isinstance(exp["models"], list) else []
+        got = [norm_model(m, wanted[i] if i < len(wanted) else None) for i, m in enumerate(result)]
         if not same(exp["models"], got):
             raise Fail("models: expected %s, got %s" % (short(exp["models"]), short(got)))
     elif "raw" in exp:

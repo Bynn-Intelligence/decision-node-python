@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Union
 
+from ._boosters import Evidence, parse_evidence
+
 __all__ = [
     "Answer",
     "TruthAnswer",
@@ -173,13 +175,18 @@ AnyAnswer = Union[TruthAnswer, ChoiceAnswer, ScoreAnswer, NumberAnswer, PointAns
 @dataclass(frozen=True)
 class Usage:
     """Token counts of one decision; for a request with videos also the frames and the
-    seconds the server read (``None`` otherwise)."""
+    seconds the server read, and for a request with boosters the readings' tokens and the
+    booster calls billed (``None`` otherwise)."""
 
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
     # Only a request with videos carries these.
     video_frames: Optional[int] = None
     video_seconds: Optional[Union[int, float]] = None
+    # Only a request with boosters carries these: the share of input_tokens the readings
+    # take, and the booster calls billed.
+    booster_tokens: Optional[int] = None
+    boosters: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -222,7 +229,8 @@ class Decision:
 
     Attributes:
         answers: The answers, by question id.
-        model: The model version that answered.
+        model: The model version that answered; for a fine-tuned model its pinned name
+            (``decisionnode-1.0-flash@acme/fraud:3``).
         usage: Token counts.
         request_id: The ``x-request-id`` response header.
         latency_ms: The server's own time for the request, from ``x-decisionnode-latency-ms``.
@@ -231,6 +239,8 @@ class Decision:
         raw: The parsed response body.
         warnings: What the server says it changed when it read the request's videos (a
             lower rate or resolution), as sent; empty when it sent none.
+        evidence: What each booster of the request read: booster name to
+            :class:`Evidence`, in the request's order; ``None`` when the request named none.
     """
 
     answers: Dict[str, AnyAnswer]
@@ -241,6 +251,7 @@ class Decision:
     safety: Optional[Safety]
     raw: Dict[str, Any] = field(repr=False)
     warnings: List[str] = field(default_factory=list)
+    evidence: Optional[Dict[str, Evidence]] = None
 
     def __getitem__(self, question_id: str) -> Any:
         # Typed as Any so that ``decision["route"].choice`` reads naturally under a type
@@ -268,6 +279,13 @@ class ModelInfo:
         limits: Every other field of the entry: the limits the model publishes, such
             as the largest request in tokens.
         raw: The entry exactly as received.
+        fine_tuned: ``True`` for a fine-tuned model of the key's workspace; ``None`` on
+            the catalogue's own entries.
+        base: A fine-tuned model's base model.
+        adapter_version: A fine-tuned model's version number; on its plain name, the
+            version the name resolves to.
+        status: A fine-tuned model's status: ``deployed`` (answers decisions) or ``ready``
+            (trained, not deployed); any other value as received.
     """
 
     name: str
@@ -275,6 +293,10 @@ class ModelInfo:
     release_date: Optional[str]
     limits: Dict[str, Any]
     raw: Dict[str, Any] = field(repr=False)
+    fine_tuned: Optional[bool] = None
+    base: Optional[str] = None
+    adapter_version: Optional[int] = None
+    status: Optional[str] = None
 
 
 # --------------------------------------------------------------------------- parsing
@@ -414,12 +436,15 @@ def parse_decision(body: Any, headers: Mapping[str, str]) -> Decision:
             output_tokens=usage.get("output_tokens"),
             video_frames=usage.get("video_frames"),
             video_seconds=usage.get("video_seconds"),
+            booster_tokens=usage.get("booster_tokens"),
+            boosters=usage.get("boosters"),
         ),
         request_id=headers.get("x-request-id"),
         latency_ms=parse_latency(headers.get("x-decisionnode-latency-ms")),
         safety=parse_safety(headers.get("x-decisionnode-safety")),
         raw=dict(body),
         warnings=[w for w in warnings if isinstance(w, str)] if isinstance(warnings, list) else [],
+        evidence=parse_evidence(body.get("evidence")),
     )
 
 
@@ -437,12 +462,17 @@ def parse_latency(value: Optional[str]) -> Optional[Union[int, float]]:
 
 def parse_model(raw: Any) -> ModelInfo:
     entry = dict(raw) if isinstance(raw, Mapping) else {}
+    fine_tuned, base, version, status = (entry.get(k) for k in ("fine_tuned", "base", "adapter_version", "status"))
     return ModelInfo(
         name=entry.get("name", ""),
         description=entry.get("description"),
         release_date=entry.get("release_date"),
         limits={k: v for k, v in entry.items() if k not in ("name", "description", "release_date")},
         raw=entry,
+        fine_tuned=fine_tuned if isinstance(fine_tuned, bool) else None,
+        base=base if isinstance(base, str) else None,
+        adapter_version=version if isinstance(version, int) and not isinstance(version, bool) else None,
+        status=status if isinstance(status, str) else None,
     )
 
 

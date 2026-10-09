@@ -17,6 +17,18 @@ d["days"].number       # 3
 """
 
 from ._batches import AsyncBatchResults, Batch, BatchPage, BatchResult, BatchResults, BatchRun
+from ._boosters import (
+    AgeReading,
+    AiGeneratedReading,
+    AnyReading,
+    Booster,
+    BoosterInput,
+    BoosterStatus,
+    Evidence,
+    Reading,
+    TopGenerator,
+    UnknownReading,
+)
 from ._client import AsyncBatches, AsyncDecisionNode, Batches, BatchRequest, DecideRequest, DecisionNode, DecisionResult
 from ._errors import (
     AuthenticationError,
@@ -96,6 +108,9 @@ __all__ = [
     "Image",
     "Video",
     "VideoFrame",
+    # boosters
+    "Booster",
+    "BoosterInput",
     # results
     "Decision",
     "Answer",
@@ -110,6 +125,14 @@ __all__ = [
     "Usage",
     "Safety",
     "ModelInfo",
+    "Evidence",
+    "Reading",
+    "AnyReading",
+    "AgeReading",
+    "AiGeneratedReading",
+    "TopGenerator",
+    "UnknownReading",
+    "BoosterStatus",
     # sessions
     "Session",
     "AsyncSession",
