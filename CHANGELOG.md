@@ -16,8 +16,9 @@ Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`).
   order given. Left out or empty, the request has no `boosters` field. The client checks
   nothing about boosters itself; the API answers. Sessions take no boosters.
 - `Decision.evidence`: booster name to `Evidence` (`version`, `status`, `latency_ms`,
-  `results`), with `AgeReading`, `AiGeneratedReading` (and its `TopGenerator`) and
-  `UnknownReading` for a reading of a booster this version does not know or with a field
+  `results`), with `AgeReading`, `AiGeneratedReading` (its `TopGenerator`, `None` unless
+  the reading says likely generated, `c2pa_signer`, and `c2pa`, `untrusted` for Content
+  Credentials that validate but are not trusted) and `UnknownReading` for a reading of a booster this version does not know or with a field
   missing or of the wrong type. `None` when the request named no boosters.
 - `Decision.usage.booster_tokens` and `Decision.usage.boosters` (`None` when absent).
 - `DecisionNodeError.boosters`: the `x-decisionnode-boosters` header as booster name to

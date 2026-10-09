@@ -140,15 +140,21 @@ class AiGeneratedReading(Reading):
         confidence: From 0 to 1.
         method: ``inference`` (read from the pixels) or ``c2pa`` (the file's Content
             Credentials say so); any other value as received.
-        top_generator: The likeliest generator.
-        c2pa_signer: Who signed the file's Content Credentials, or ``None`` when it has none.
+        top_generator: The likeliest generator, when the reading says the picture is
+            likely generated; ``None`` otherwise, and always on a ``c2pa`` reading.
+        c2pa_signer: Who signed the file's Content Credentials when they are trusted;
+            ``None`` otherwise.
+        c2pa: ``untrusted`` when the file carries Content Credentials that validate but
+            are not trusted (they name no signer and change nothing in the reading); any
+            other value as received; ``None`` when the reading has none.
     """
 
     generated: Union[int, float]
     confidence: Union[int, float]
     method: str
-    top_generator: TopGenerator
+    top_generator: Optional[TopGenerator] = None
     c2pa_signer: Optional[str] = None
+    c2pa: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -235,23 +241,29 @@ def _age(raw: Dict[str, Any]) -> AgeReading:
 
 
 def _ai_generated(raw: Dict[str, Any]) -> AiGeneratedReading:
-    top = raw.get("top_generator")
-    if not isinstance(top, Mapping):
+    # top_generator and c2pa_signer are always sent, null when unset; c2pa only when the
+    # file's Content Credentials are not trusted.
+    if "top_generator" not in raw or "c2pa_signer" not in raw:
+        raise _Malformed("top_generator" if "top_generator" not in raw else "c2pa_signer")
+    top = raw["top_generator"]
+    if top is not None and not isinstance(top, Mapping):
         raise _Malformed("top_generator")
-    # c2pa_signer is always sent: null when the file carries no Content Credentials.
-    if "c2pa_signer" not in raw:
-        raise _Malformed("c2pa_signer")
-    signer = raw["c2pa_signer"]
+    signer, c2pa = raw["c2pa_signer"], raw.get("c2pa")
     if signer is not None and not isinstance(signer, str):
         raise _Malformed("c2pa_signer")
+    if c2pa is not None and not isinstance(c2pa, str):
+        raise _Malformed("c2pa")
     return AiGeneratedReading(
         image=_string(raw, "image"),
         raw=raw,
         generated=_number(raw, "generated"),
         confidence=_number(raw, "confidence"),
         method=_string(raw, "method"),
-        top_generator=TopGenerator(name=_string(top, "name"), probability=_number(top, "probability")),
+        top_generator=(
+            None if top is None else TopGenerator(name=_string(top, "name"), probability=_number(top, "probability"))
+        ),
         c2pa_signer=signer,
+        c2pa=c2pa,
     )
 
 

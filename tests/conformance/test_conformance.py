@@ -266,6 +266,7 @@ def norm_reading(r: Any) -> Dict[str, Any]:
             "method": r.method,
             "top_generator": None if top is None else {"name": top.name, "probability": top.probability},
             "c2pa_signer": r.c2pa_signer,
+            "c2pa": r.c2pa,
         }
     if not isinstance(r, dn.UnknownReading):
         raise Fail("reading of class %s is none of the reading types" % type(r).__name__)

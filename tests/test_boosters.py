@@ -297,8 +297,17 @@ def test_readings() -> None:
                         "generated": 1.0,
                         "confidence": 1.0,
                         "method": "c2pa",
-                        "top_generator": {"name": "Generator B", "probability": 0.64},
+                        "top_generator": None,
                         "c2pa_signer": "Example Camera Co.",
+                    },
+                    {
+                        "image": "u",
+                        "generated": 0.12,
+                        "confidence": 0.76,
+                        "method": "inference",
+                        "top_generator": None,
+                        "c2pa_signer": None,
+                        "c2pa": "untrusted",
                     },
                     {
                         "image": "b",
@@ -326,6 +335,15 @@ def test_readings() -> None:
                     },
                     {"image": "e", "generated": 0.2, "confidence": 0.7, "method": "inference", "c2pa_signer": 1},
                     {"image": "f", "generated": True, "confidence": 0.7, "method": "inference"},
+                    {
+                        "image": "k",
+                        "generated": 0.2,
+                        "confidence": 0.7,
+                        "method": "inference",
+                        "top_generator": None,
+                        "c2pa_signer": None,
+                        "c2pa": 5,
+                    },
                 ],
             },
             "age": {
@@ -356,13 +374,16 @@ def test_readings() -> None:
     )
     assert ev is not None
     assert list(ev) == ["ai_generated", "age", "timed", "skip", "objects", "odd", "strange"]
-    c2pa, new_method, *bad = ev["ai_generated"].results
+    c2pa, untrusted, new_method, *bad = ev["ai_generated"].results
     assert type(c2pa) is dn.AiGeneratedReading and c2pa.method == "c2pa" and c2pa.c2pa_signer == "Example Camera Co."
-    assert c2pa.top_generator == dn.TopGenerator(name="Generator B", probability=0.64)
+    assert c2pa.top_generator is None and c2pa.c2pa is None
+    assert type(untrusted) is dn.AiGeneratedReading and untrusted.c2pa == "untrusted"
+    assert (untrusted.top_generator, untrusted.c2pa_signer) == (None, None)
     assert type(new_method) is dn.AiGeneratedReading and new_method.method == "something-new"
-    # A wrong type, no top_generator, no c2pa_signer key, a bad top_generator, a bad
-    # signer, a boolean probability: each a generic reading.
-    assert [type(r) for r in bad] == [dn.UnknownReading] * 6
+    assert new_method.top_generator == dn.TopGenerator(name="Generator A", probability=0.1)
+    # A wrong type, no top_generator key, no c2pa_signer key, a bad top_generator, a bad
+    # signer, a boolean probability, a c2pa that is not a string: each a generic reading.
+    assert [type(r) for r in bad] == [dn.UnknownReading] * 7
     assert bad[0].image == "c" and bad[0].raw["generated"] == "high"
     assert all(type(r) is dn.UnknownReading for r in ev["age"].results)
     assert [r.image for r in ev["age"].results] == ["a", "b", "i", "j", "c", None, None]
