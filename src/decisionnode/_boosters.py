@@ -18,6 +18,7 @@ __all__ = [
     "Reading",
     "AgeReading",
     "AiGeneratedReading",
+    "OcrReading",
     "TopGenerator",
     "UnknownReading",
     "AnyReading",
@@ -165,12 +166,27 @@ class AiGeneratedReading(Reading):
 
 
 @dataclass(frozen=True)
+class OcrReading(Reading):
+    """A reading of the ``ocr`` booster: the text the picture shows, in reading order, or
+    the answer to the booster's ``prompt`` option.
+
+    Attributes:
+        text: The text read; empty when the picture shows none, which is a reading, not
+            a failure.
+        truncated: ``True`` when the reading was cut at the model's context limit.
+    """
+
+    text: str
+    truncated: bool
+
+
+@dataclass(frozen=True)
 class UnknownReading(Reading):
     """A reading of a booster this version of the client does not know, or a known
     reading whose fields are missing or of the wrong type. Read its fields from ``raw``."""
 
 
-AnyReading = Union[AgeReading, AiGeneratedReading, UnknownReading]
+AnyReading = Union[AgeReading, AiGeneratedReading, OcrReading, UnknownReading]
 
 
 @dataclass(frozen=True)
@@ -279,7 +295,18 @@ def _ai_generated(raw: Dict[str, Any]) -> AiGeneratedReading:
     )
 
 
-_READERS: Dict[str, Callable[[Dict[str, Any]], AnyReading]] = {"age": _age, "ai_generated": _ai_generated}
+def _ocr(raw: Dict[str, Any]) -> OcrReading:
+    truncated = raw.get("truncated")
+    if not isinstance(truncated, bool):
+        raise _Malformed("truncated")
+    return OcrReading(image=_string(raw, "image"), raw=raw, text=_string(raw, "text"), truncated=truncated)
+
+
+_READERS: Dict[str, Callable[[Dict[str, Any]], AnyReading]] = {
+    "age": _age,
+    "ai_generated": _ai_generated,
+    "ocr": _ocr,
+}
 
 
 def parse_reading(booster: str, raw: Any) -> AnyReading:

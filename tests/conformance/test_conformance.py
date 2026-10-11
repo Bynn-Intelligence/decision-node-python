@@ -287,6 +287,8 @@ def norm_reading(r: Any) -> Dict[str, Any]:
             "c2pa_signer": r.c2pa_signer,
             "c2pa": r.c2pa,
         }
+    if isinstance(r, dn.OcrReading):
+        return {"kind": "ocr", "image": r.image, "text": r.text, "truncated": r.truncated}
     if not isinstance(r, dn.UnknownReading):
         raise Fail("reading of class %s is none of the reading types" % type(r).__name__)
     return {"kind": "unknown", "raw": r.raw}

@@ -536,3 +536,36 @@ def test_fine_tuned_model_entries(mode: str) -> None:
         (None, None, None, None),
     ]
     assert models[1].limits["adapter_version"] == 3 and models[1].limits["version"] == deployed["version"]
+
+
+def test_ocr_readings() -> None:
+    ev = parse_evidence(
+        {
+            "ocr": {
+                "version": "ocr-v1",
+                "status": "ok",
+                "latency_ms": 420,
+                "results": [
+                    {"image": "receipt", "text": "Total 740.00", "truncated": False},
+                    {"image": "blank", "text": "", "truncated": False},
+                    {"image": "long", "text": "{}", "truncated": True},
+                    {"image": "a", "text": 740, "truncated": False},
+                    {"image": "b", "text": "Total", "truncated": "yes"},
+                    {"image": "c", "truncated": False},
+                    # truncated is always sent: a reading without it is generic.
+                    {"image": "d", "text": "Total"},
+                ],
+            }
+        }
+    )
+    assert ev is not None
+    receipt, blank, long, *bad = ev["ocr"].results
+    assert type(receipt) is dn.OcrReading and (receipt.image, receipt.text, receipt.truncated) == (
+        "receipt",
+        "Total 740.00",
+        False,
+    )
+    # No text in the picture is a reading, not a failure.
+    assert type(blank) is dn.OcrReading and blank.text == ""
+    assert type(long) is dn.OcrReading and long.truncated is True
+    assert [type(r) for r in bad] == [dn.UnknownReading] * 4
