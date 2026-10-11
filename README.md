@@ -581,25 +581,31 @@ objects.
 
 | Model | |
 |---|---|
-| `decisionnode-latest` | The main model. The default. |
-| `decisionnode-flash-latest` | Faster and lower cost. |
-| `decisionnode-1.0`, `decisionnode-1.0-flash` | Pinned versions. |
+| `decisionnode-moe` | The main model, always its current release. The default. |
+| `decisionnode-flash` | Faster and lower cost, always its current release. |
 
-Choose per client (`DecisionNode(model="decisionnode-flash-latest")`) or per call
-(`dn.decide(..., model="decisionnode-1.0")`). Each model publishes its limits in
+Choose per client (`DecisionNode(model="decisionnode-flash")`) or per call
+(`dn.decide(..., model="decisionnode-moe")`). Each model publishes its limits in
 `models()`.
+
+`models()` also lists the pinned ids served, `decisionnode-<family>-<version>` (such as
+`decisionnode-moe-<version>`); send one to stay on that release. Every answer's `model` is
+the pinned id that answered. `model` is free text: a pinned id, a fine-tuned name and the
+older ids the API still accepts (`decisionnode-1.0`, `decisionnode-1.0-flash`,
+`decisionnode-latest`, `decisionnode-flash-latest`) are sent as given.
 
 ### Fallback
 
-A request for `decisionnode-1.0` (or `decisionnode-latest`) that no worker of that model
-can take at once is answered by `decisionnode-1.0-flash` instead, billed at its price.
-`d.model` is the model that answered, and `d.fallback` names both:
+A request for `decisionnode-moe` that no worker of that model can take at once is
+answered by Flash instead, billed at its price. `d.model` is the model that answered, and
+`d.fallback` names both: the model that answered by its pinned id, and the model asked for
+as it was asked (a family id or an older id as the family id, a pinned id as itself):
 
 ```python
-d = dn.decide(state=ticket, questions=questions, model="decisionnode-1.0")
+d = dn.decide(state=ticket, questions=questions, model="decisionnode-moe")
 if d.fallback is not None:
-    d.fallback.served_model  # "decisionnode-1.0-flash"
-    d.fallback.requested_model  # "decisionnode-1.0"
+    d.fallback.served_model  # "decisionnode-flash-<version>"
+    d.fallback.requested_model  # "decisionnode-moe"
 ```
 
 `fallback=False` turns it off for one request: such a request gets the 529
@@ -614,8 +620,8 @@ keys only, and answers like its base: the same question types, answers, limits a
 errors.
 
 ```python
-d = dn.decide(state=claim, questions=questions, model="decisionnode-1.0-flash@acme/fraud")
-d.model  # "decisionnode-1.0-flash@acme/fraud:3", the version that answered
+d = dn.decide(state=claim, questions=questions, model="decisionnode-moe@acme/fraud")
+d.model  # "decisionnode-moe@acme/fraud:3", the version that answered
 ```
 
 The name is `<base>@<workspace>/<name>`, which means the version deployed most recently,
@@ -815,7 +821,7 @@ d.raw["safety"]  # {"checked": True, "harm": 0.031, "self_harm": 0.004, "flagged
 |---|---|---|
 | `api_key` | `DECISIONNODE_API_KEY` | none: a call without a key fails before sending |
 | `base_url` | `DECISIONNODE_BASE_URL` | `https://api.decisionnode.com` |
-| `model` | `DECISIONNODE_MODEL` | `decisionnode-latest` |
+| `model` | `DECISIONNODE_MODEL` | `decisionnode-moe` |
 | `timeout` | | `10.0` seconds for one whole attempt; must be above 0 |
 | `max_retries` | | `2`; must be 0 or more |
 | `headers` | | extra headers sent on every request |
@@ -846,7 +852,7 @@ response body, for an API field this version of the SDK does not know yet:
 ```python
 dn.decide_raw(
     {
-        "model": "decisionnode-latest",
+        "model": "decisionnode-moe",
         "state": "",
         "questions": {"q": {"type": "truth", "instructions": "Is hotdog a sandwich?"}},
     }

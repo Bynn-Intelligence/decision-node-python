@@ -40,7 +40,7 @@ from ._version import __version__
 logger = logging.getLogger("decisionnode")
 
 DEFAULT_BASE_URL = "https://api.decisionnode.com"
-DEFAULT_MODEL = "decisionnode-latest"
+DEFAULT_MODEL = "decisionnode-moe"
 DEFAULT_TIMEOUT = 10.0
 # One storage PUT attempt of an image, apart from the API attempt's timeout: up to 10 MB
 # on a slower uplink than the API's answers need.

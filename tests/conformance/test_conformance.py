@@ -153,8 +153,15 @@ def short(value: Any) -> str:
     return text if len(text) < 200 else text[:197] + "..."
 
 
+def is_pattern(v: Any) -> bool:
+    return isinstance(v, dict) and len(v) == 1 and isinstance(v.get("$pattern"), str)
+
+
 def same(a: Any, b: Any) -> bool:
-    """JSON equality: bools apart from numbers, numbers compared exactly as doubles."""
+    """JSON equality: bools apart from numbers, numbers compared exactly as doubles. An
+    expected {"$pattern": regex} matches a string the regex finds."""
+    if is_pattern(a):
+        return isinstance(b, str) and re.search(a["$pattern"], b) is not None
     if isinstance(a, bool) or isinstance(b, bool):
         return type(a) is type(b) and a == b
     if isinstance(a, (int, float)) and isinstance(b, (int, float)):
@@ -167,7 +174,7 @@ def same(a: Any, b: Any) -> bool:
 
 
 def match(expected: Any, actual: Any, path: str) -> None:
-    if isinstance(expected, dict) and isinstance(actual, dict):
+    if isinstance(expected, dict) and isinstance(actual, dict) and not is_pattern(expected):
         for k, v in expected.items():
             if k not in actual:
                 raise Fail("%s.%s: missing (expected %s)" % (path, k, short(v)))

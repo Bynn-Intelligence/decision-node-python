@@ -41,6 +41,10 @@ Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`).
 
 ### Changed
 
+- The default model is `decisionnode-moe` (it was `decisionnode-latest`), and the docs use
+  the family ids `decisionnode-moe` and `decisionnode-flash`, which always mean the current
+  release; a pinned id is `decisionnode-<family>-<version>`, as `models()` lists it. The
+  older ids are still accepted by the API and sent as given.
 - `PermissionDeniedError` is documented as every 403 that is not a refusal, a booster
   turned off for the workspace included; `OverloadedError` as also raised, and retried,
   for a required booster that failed (`booster_unavailable`).

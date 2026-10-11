@@ -48,7 +48,9 @@ def mode(request: pytest.FixtureRequest) -> str:
 
 def answering(answers: Dict[str, Any]) -> Any:
     def handler(request: httpx.Request) -> httpx.Response:
-        return json_response(200, {"model": "decisionnode-1.0", "answers": answers, "usage": {"input_tokens": 9}})
+        return json_response(
+            200, {"model": "decisionnode-moe-0.9.0-rc1", "answers": answers, "usage": {"input_tokens": 9}}
+        )
 
     return handler
 

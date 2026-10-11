@@ -16,8 +16,8 @@ from decisionnode._batches import parse_result_line
 MODES = ["sync", "async"]
 Q = {"q": {"type": "truth", "instructions": "?"}}
 FALLBACK_HEADERS = {
-    "x-decisionnode-fallback": "decisionnode-1.0-flash",
-    "x-decisionnode-requested-model": "decisionnode-1.0",
+    "x-decisionnode-fallback": "decisionnode-flash-0.9.0-rc1",
+    "x-decisionnode-requested-model": "decisionnode-moe-0.9.0-rc1",
 }
 
 
@@ -48,20 +48,20 @@ def mode(request: pytest.FixtureRequest) -> str:
     return request.param  # type: ignore[no-any-return]
 
 
-def ok(headers: Any = None, model: str = "decisionnode-1.0") -> httpx.Response:
+def ok(headers: Any = None, model: str = "decisionnode-moe-0.9.0-rc1") -> httpx.Response:
     return json_response(200, decision_body(model=model), headers)
 
 
 def test_decide_sends_fallback_only_when_given(mode: str) -> None:
     rec = Recorder(ok())
     h = Harness(mode, rec)
-    h.call("decide", "s", Q, model="decisionnode-1.0", fallback=False)
+    h.call("decide", "s", Q, model="decisionnode-moe", fallback=False)
     assert rec.body()["fallback"] is False
-    h.call("decide", "s", Q, model="decisionnode-1.0", fallback=True)
+    h.call("decide", "s", Q, model="decisionnode-moe", fallback=True)
     assert rec.body()["fallback"] is True
-    h.call("decide", "s", Q, model="decisionnode-1.0")
+    h.call("decide", "s", Q, model="decisionnode-moe")
     # Left out, the body is the body of a client without the option.
-    assert rec.body() == {"model": "decisionnode-1.0", "state": "s", "questions": Q}
+    assert rec.body() == {"model": "decisionnode-moe", "state": "s", "questions": Q}
 
 
 @pytest.mark.parametrize(
@@ -143,10 +143,12 @@ def test_fallback_must_be_a_bool(mode: str, value: Any) -> None:
 
 
 def test_fallback_answer(mode: str) -> None:
-    rec = Recorder(ok(FALLBACK_HEADERS, model="decisionnode-1.0-flash"))
-    d = Harness(mode, rec).call("decide", "s", Q, model="decisionnode-1.0")
-    assert d.model == "decisionnode-1.0-flash"
-    assert d.fallback == dn.Fallback(served_model="decisionnode-1.0-flash", requested_model="decisionnode-1.0")
+    rec = Recorder(ok(FALLBACK_HEADERS, model="decisionnode-flash-0.9.0-rc1"))
+    d = Harness(mode, rec).call("decide", "s", Q, model="decisionnode-moe")
+    assert d.model == "decisionnode-flash-0.9.0-rc1"
+    assert d.fallback == dn.Fallback(
+        served_model="decisionnode-flash-0.9.0-rc1", requested_model="decisionnode-moe-0.9.0-rc1"
+    )
 
 
 def test_ordinary_answer_has_no_fallback(mode: str) -> None:
@@ -155,16 +157,16 @@ def test_ordinary_answer_has_no_fallback(mode: str) -> None:
 
 
 def test_fallback_without_requested_model(mode: str) -> None:
-    headers = {"x-decisionnode-fallback": "decisionnode-1.0-flash"}
-    d = Harness(mode, Recorder(ok(headers, model="decisionnode-1.0-flash"))).call("decide", "s", Q)
-    assert d.fallback == dn.Fallback(served_model="decisionnode-1.0-flash", requested_model=None)
+    headers = {"x-decisionnode-fallback": "decisionnode-flash-0.9.0-rc1"}
+    d = Harness(mode, Recorder(ok(headers, model="decisionnode-flash-0.9.0-rc1"))).call("decide", "s", Q)
+    assert d.fallback == dn.Fallback(served_model="decisionnode-flash-0.9.0-rc1", requested_model=None)
 
 
 def test_batch_result_reads_fallback() -> None:
     line = {"custom_id": "r1", "status": 200, "body": decision_body(), "headers": FALLBACK_HEADERS}
     result = parse_result_line(json.dumps(line))
     assert result.decision is not None
-    assert result.decision.fallback == dn.Fallback("decisionnode-1.0-flash", "decisionnode-1.0")
+    assert result.decision.fallback == dn.Fallback("decisionnode-flash-0.9.0-rc1", "decisionnode-moe-0.9.0-rc1")
     plain = parse_result_line(json.dumps(dict(line, headers={})))
     assert plain.decision is not None and plain.decision.fallback is None
 
@@ -177,6 +179,6 @@ def test_fallback_false_overloaded_is_retried(mode: str) -> None:
     )
     rec = Recorder(overloaded)
     with pytest.raises(dn.OverloadedError) as info:
-        Harness(mode, rec).call("decide", "s", Q, model="decisionnode-1.0", fallback=False)
+        Harness(mode, rec).call("decide", "s", Q, model="decisionnode-moe", fallback=False)
     assert info.value.status == 529 and len(rec.requests) == 3
     assert all(json.loads(r.content)["fallback"] is False for r in rec.requests)

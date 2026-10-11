@@ -232,7 +232,7 @@ class TestBatches:
             json.dumps(
                 {
                     "custom_id": "a",
-                    "model": "decisionnode-latest",
+                    "model": "decisionnode-moe",
                     "state": "",
                     "questions": {"q": {"type": "truth", "instructions": "?"}},
                     "metadata": {"k": 1},
@@ -372,16 +372,16 @@ class TestSessionValues:
 MODELS = {
     "models": [
         {
-            "name": "decisionnode-1.0",
-            "version": "decisionnode-1.0",
-            "alias": "decisionnode-latest",
+            "name": "decisionnode-moe",
+            "version": "decisionnode-moe-0.9.0-rc1",
+            "alias": "decisionnode-moe",
             "number_max_grid_values": 4096,
             "sessions": {"enabled": True, "max_window": 16},
         },
         {
-            "name": "decisionnode-1.0-flash",
-            "version": "decisionnode-1.0-flash",
-            "alias": "decisionnode-flash-latest",
+            "name": "decisionnode-flash",
+            "version": "decisionnode-flash-0.9.0-rc1",
+            "alias": "decisionnode-flash",
             "number_max_grid_values": 0,
             "sessions": {"enabled": False},
         },
@@ -432,11 +432,11 @@ class TestChecks:
     def test_held_limits_by_alias_and_version(self, mode: str) -> None:
         h = Harness(mode, lambda r: json_response(200, MODELS))
         h.call("models")
-        for model in ("decisionnode-latest", "decisionnode-1.0"):
+        for model in ("decisionnode-moe", "decisionnode-moe-0.9.0-rc1"):
             with pytest.raises(dn.ValidationError) as info:
                 h.client.check_request("open_session", questions={"a": dn.truth("?")}, model=model, window=17)
             assert info.value.entries[0]["ctx"] == {"le": 16}  # type: ignore[index]
-        for model in ("decisionnode-flash-latest", "decisionnode-1.0-flash"):
+        for model in ("decisionnode-flash", "decisionnode-flash-0.9.0-rc1"):
             with pytest.raises(dn.BadRequestError, match="does not answer number questions"):
                 h.client.check_request("decide", questions={"n": dn.number("?")}, model=model)
         # A name the held list does not state holds nothing: left to the server.

@@ -710,7 +710,7 @@ class DecisionNode(_Common):
         base_url: The API's root URL. Default: ``DECISIONNODE_BASE_URL``, else
             ``https://api.decisionnode.com``.
         model: The model sent when a call names none. Default: ``DECISIONNODE_MODEL``,
-            else ``decisionnode-latest``.
+            else ``decisionnode-moe``.
         timeout: Seconds one whole attempt may take, from sending the request to the
             last byte of the response (default 10). Must be above 0.
         max_retries: Retries after the first attempt (default 2). Must be 0 or more.
@@ -1066,9 +1066,9 @@ class DecisionNode(_Common):
             boosters: Booster names, or :class:`Booster` objects for a booster that needs
                 a setting, read before the decision; their readings come back in
                 ``evidence``.
-            fallback: ``False``: a ``decisionnode-1.0`` request that no worker can take at
+            fallback: ``False``: a ``decisionnode-moe`` request that no worker can take at
                 once gets the 529 :class:`OverloadedError` instead of an answer from
-                ``decisionnode-1.0-flash``. Left out, the API's default (``True``) applies.
+                Flash. Left out, the API's default (``True``) applies.
 
         Returns:
             A :class:`Decision`. Read each answer by its id: ``decision["route"]``.

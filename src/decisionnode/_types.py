@@ -230,7 +230,8 @@ class Fallback:
     Attributes:
         served_model: The model that answered, from ``x-decisionnode-fallback``.
         requested_model: The model the request asked for, from
-            ``x-decisionnode-requested-model``.
+            ``x-decisionnode-requested-model``: the family id for a family id or an
+            older id, the pinned id for a pinned id.
     """
 
     served_model: str
@@ -246,7 +247,7 @@ class Decision:
     Attributes:
         answers: The answers, by question id.
         model: The model version that answered; for a fine-tuned model its pinned name
-            (``decisionnode-1.0-flash@acme/fraud:3``).
+            (``decisionnode-moe@acme/fraud:3``).
         usage: Token counts.
         request_id: The ``x-request-id`` response header.
         latency_ms: The server's own time for the request, from ``x-decisionnode-latency-ms``.
@@ -292,7 +293,7 @@ class ModelInfo:
     """One entry of the model list returned by ``models()``.
 
     Attributes:
-        name: The model id to send, such as ``decisionnode-latest``.
+        name: The model id to send, such as ``decisionnode-moe``.
         description: What the model is.
         release_date: ``YYYY-MM-DD``.
         limits: Every other field of the entry: the limits the model publishes, such

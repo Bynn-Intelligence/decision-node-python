@@ -42,7 +42,7 @@ def test_unknown_type_and_malformed_answers() -> None:
 
 def test_decision_reads_by_id_and_headers() -> None:
     body = {
-        "model": "decisionnode-1.0",
+        "model": "decisionnode-moe-0.9.0-rc1",
         "answers": {"b": {"type": "truth", "truth": 0.1}, "a": {"type": "truth", "truth": 0.9}},
         "usage": {"input_tokens": 12, "output_tokens": 0},
     }
@@ -83,7 +83,7 @@ def test_safety_tolerates_extra_categories_and_params() -> None:
 
 
 def test_model_limits() -> None:
-    m = parse_model({"name": "decisionnode-1.0", "description": "d", "release_date": "2026-10-01", "max_images": 4})
+    m = parse_model({"name": "decisionnode-moe", "description": "d", "release_date": "2026-10-01", "max_images": 4})
     assert m.limits == {"max_images": 4}
     assert parse_model({"name": "x"}).limits == {}
 

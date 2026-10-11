@@ -43,7 +43,12 @@ def ok() -> Any:
         sent = json.loads(request.content)
         answers = {qid: {"type": "truth", "truth": 0.4} for qid in sent["questions"]}
         return json_response(
-            200, {"model": "decisionnode-1.0", "answers": answers, "usage": {"input_tokens": 9, "output_tokens": 0}}
+            200,
+            {
+                "model": "decisionnode-moe-0.9.0-rc1",
+                "answers": answers,
+                "usage": {"input_tokens": 9, "output_tokens": 0},
+            },
         )
 
     return handler
@@ -126,7 +131,7 @@ def test_batch_line_carries_videos(mode: str) -> None:
 
 def test_decision_reads_video_usage_and_warnings(mode: str) -> None:
     body = {
-        "model": "decisionnode-1.0",
+        "model": "decisionnode-moe-0.9.0-rc1",
         "answers": {"q": {"type": "truth", "truth": 0.4}},
         "usage": {"input_tokens": 900, "output_tokens": 0, "video_frames": 20, "video_seconds": 10.0},
         "warnings": ["Video 'cam' was read at 1 frame a second."],

@@ -10,7 +10,9 @@ import httpx
 Handler = Callable[[httpx.Request], httpx.Response]
 
 
-def decision_body(answers: Optional[Dict[str, Any]] = None, model: str = "decisionnode-1.0") -> Dict[str, Any]:
+def decision_body(
+    answers: Optional[Dict[str, Any]] = None, model: str = "decisionnode-moe-0.9.0-rc1"
+) -> Dict[str, Any]:
     return {
         "model": model,
         "answers": answers or {"q": {"type": "truth", "truth": 0.5}},

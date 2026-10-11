@@ -64,32 +64,32 @@ def mode(request: pytest.FixtureRequest) -> str:
 
 def test_settings_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
     c = dn.DecisionNode()
-    assert c.base_url == "https://api.decisionnode.com" and c.model == "decisionnode-latest" and c.api_key is None
+    assert c.base_url == "https://api.decisionnode.com" and c.model == "decisionnode-moe" and c.api_key is None
     assert c.max_retries == 2 and c.timeout == 10.0
     monkeypatch.setenv("DECISIONNODE_API_KEY", "env-key")
     monkeypatch.setenv("DECISIONNODE_BASE_URL", "https://env.example/")
-    monkeypatch.setenv("DECISIONNODE_MODEL", "decisionnode-flash-latest")
+    monkeypatch.setenv("DECISIONNODE_MODEL", "decisionnode-flash")
     c = dn.DecisionNode()
-    assert (c.api_key, c.base_url, c.model) == ("env-key", "https://env.example", "decisionnode-flash-latest")
-    c = dn.DecisionNode(api_key="secret-arg-key", base_url="https://arg.example", model="decisionnode-1.0")
-    assert (c.api_key, c.base_url, c.model) == ("secret-arg-key", "https://arg.example", "decisionnode-1.0")
+    assert (c.api_key, c.base_url, c.model) == ("env-key", "https://env.example", "decisionnode-flash")
+    c = dn.DecisionNode(api_key="secret-arg-key", base_url="https://arg.example", model="decisionnode-moe")
+    assert (c.api_key, c.base_url, c.model) == ("secret-arg-key", "https://arg.example", "decisionnode-moe")
     assert "secret-arg-key" not in repr(c)
 
 
 def test_empty_arguments_count_as_not_given(monkeypatch: pytest.MonkeyPatch) -> None:
     c = dn.DecisionNode(api_key="", base_url="", model="")
-    assert (c.api_key, c.base_url, c.model) == (None, "https://api.decisionnode.com", "decisionnode-latest")
+    assert (c.api_key, c.base_url, c.model) == (None, "https://api.decisionnode.com", "decisionnode-moe")
     monkeypatch.setenv("DECISIONNODE_API_KEY", "env-key")
     monkeypatch.setenv("DECISIONNODE_BASE_URL", "https://env.example")
-    monkeypatch.setenv("DECISIONNODE_MODEL", "decisionnode-1.0")
+    monkeypatch.setenv("DECISIONNODE_MODEL", "decisionnode-moe")
     c = dn.DecisionNode(api_key="", base_url="", model="")
-    assert (c.api_key, c.base_url, c.model) == ("env-key", "https://env.example", "decisionnode-1.0")
+    assert (c.api_key, c.base_url, c.model) == ("env-key", "https://env.example", "decisionnode-moe")
 
 
 def test_empty_model_per_call_uses_client_model(mode: str) -> None:
     rec = Recorder(ok())
-    Harness(mode, rec, model="decisionnode-1.0").decide("s", {"q": dn.truth("?")}, model="")
-    assert rec.body()["model"] == "decisionnode-1.0"
+    Harness(mode, rec, model="decisionnode-moe").decide("s", {"q": dn.truth("?")}, model="")
+    assert rec.body()["model"] == "decisionnode-moe"
 
 
 def test_spec_version() -> None:
@@ -150,7 +150,7 @@ def test_request_shape(mode: str) -> None:
     assert req.headers["x-team"] == "t"
     assert "x-decisionnode-safety-body" not in req.headers
     assert rec.body() == {
-        "model": "decisionnode-latest",
+        "model": "decisionnode-moe",
         "state": "s",
         "questions": {"q": {"type": "truth", "instructions": "?"}},
     }
@@ -158,11 +158,11 @@ def test_request_shape(mode: str) -> None:
 
 def test_body_rules(mode: str) -> None:
     rec = Recorder(ok())
-    h = Harness(mode, rec, model="decisionnode-flash-latest")
+    h = Harness(mode, rec, model="decisionnode-flash")
     h.decide(questions={"q": {"type": "truth", "instructions": "?"}})
-    assert rec.body()["state"] == "" and rec.body()["model"] == "decisionnode-flash-latest"
-    h.decide(None, {"q": dn.truth("?")}, model="decisionnode-1.0")
-    assert rec.body()["state"] == "" and rec.body()["model"] == "decisionnode-1.0"
+    assert rec.body()["state"] == "" and rec.body()["model"] == "decisionnode-flash"
+    h.decide(None, {"q": dn.truth("?")}, model="decisionnode-moe")
+    assert rec.body()["state"] == "" and rec.body()["model"] == "decisionnode-moe"
     h.decide('{"a": 1}', {"q": dn.truth("?")})
     assert rec.body()["state"] == '{"a": 1}'
     h.decide("é", {"id with spaces?": dn.truth("ü")})
@@ -316,9 +316,9 @@ def test_helpers(mode: str) -> None:
     assert rec.body()["questions"] == {
         "classify": {"type": "choice", "instructions": "Which?", "criteria": {"a": None, "b": None}}
     }
-    s = h.score("s", "How?", ["low", "high"], model="decisionnode-1.0-flash")
+    s = h.score("s", "How?", ["low", "high"], model="decisionnode-flash")
     assert isinstance(s, dn.ScoreAnswer) and s.legend == {0: "low", 1: "high"}
-    assert rec.body()["model"] == "decisionnode-1.0-flash"
+    assert rec.body()["model"] == "decisionnode-flash"
 
 
 def test_helper_with_unexpected_answer(mode: str) -> None:
@@ -406,13 +406,13 @@ def test_helpers_take_images_and_model(mode: str) -> None:
     )
     h = Harness(mode, rec)
     img = dn.Image("i", url="https://x.example/i.png")
-    h.check("s", "?", images=[img], model="decisionnode-1.0")
-    h.classify("s", "?", ["a"], images=[img], model="decisionnode-1.0")
-    h.score("s", "?", ["low"], images=[img], model="decisionnode-1.0")
-    h.gate("ls", images=[img], model="decisionnode-1.0")
+    h.check("s", "?", images=[img], model="decisionnode-moe")
+    h.classify("s", "?", ["a"], images=[img], model="decisionnode-moe")
+    h.score("s", "?", ["low"], images=[img], model="decisionnode-moe")
+    h.gate("ls", images=[img], model="decisionnode-moe")
     for i in range(4):
         body = rec.body(i)
-        assert body["model"] == "decisionnode-1.0" and body["images"] == [{"id": "i", "url": "https://x.example/i.png"}]
+        assert body["model"] == "decisionnode-moe" and body["images"] == [{"id": "i", "url": "https://x.example/i.png"}]
 
 
 def test_models(mode: str) -> None:
@@ -421,14 +421,14 @@ def test_models(mode: str) -> None:
             200,
             {
                 "models": [
-                    {"name": "decisionnode-1.0", "description": "d", "release_date": "2026-10-01", "max_images": 4}
+                    {"name": "decisionnode-moe", "description": "d", "release_date": "2026-10-01", "max_images": 4}
                 ]
             },
         )
     )
     h = Harness(mode, rec)
     (m,) = h.models()
-    assert type(m) is dn.ModelInfo and m.name == "decisionnode-1.0" and m.limits == {"max_images": 4}
+    assert type(m) is dn.ModelInfo and m.name == "decisionnode-moe" and m.limits == {"max_images": 4}
     req = rec.requests[0]
     assert (
         req.method == "GET"
@@ -495,7 +495,7 @@ def test_decide_many_order_and_failures(mode: str) -> None:
     reqs = [
         {"state": "a", "questions": {"q": dn.truth("?")}},
         {"state": "bad", "questions": {"q": dn.truth("?")}},
-        {"state": "abc", "questions": {"q": dn.truth("?")}, "model": "decisionnode-1.0"},
+        {"state": "abc", "questions": {"q": dn.truth("?")}, "model": "decisionnode-moe"},
     ]
     results = h.decide_many(reqs, concurrency=2)
     assert isinstance(results[0], dn.Decision) and results[0]["q"].truth == 0.1

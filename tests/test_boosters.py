@@ -225,11 +225,11 @@ def test_nesting_counts_options(mode: str) -> None:
 
 
 def test_fine_tuned_model_names(mode: str) -> None:
-    pinned = "decisionnode-1.0-flash@acme/fraud:3"
+    pinned = "decisionnode-flash@acme/fraud:3"
     rec = Recorder(ok(decision_body(model=pinned)))
     h = Harness(mode, rec)
-    d = h.call("decide", "s", Q, model="decisionnode-1.0-flash@acme/fraud")
-    assert rec.body()["model"] == "decisionnode-1.0-flash@acme/fraud" and d.model == pinned
+    d = h.call("decide", "s", Q, model="decisionnode-flash@acme/fraud")
+    assert rec.body()["model"] == "decisionnode-flash@acme/fraud" and d.model == pinned
     h.call("decide", "s", Q, model=pinned)
     assert rec.body()["model"] == pinned
 
@@ -508,31 +508,31 @@ def test_errors_without_the_header_have_no_boosters(mode: str) -> None:
 
 def test_fine_tuned_model_entries(mode: str) -> None:
     catalogue = {
-        "name": "decisionnode-1.0-flash",
+        "name": "decisionnode-flash",
         "description": "d",
         "release_date": "2026-10-01",
-        "version": "decisionnode-1.0-flash",
+        "version": "decisionnode-flash-0.9.0-rc1",
         "max_images": 16,
     }
     deployed = {
-        "name": "decisionnode-1.0-flash@acme/fraud:3",
+        "name": "decisionnode-flash@acme/fraud:3",
         "description": "Claims fraud, trained on 2,400 decisions",
         "release_date": "2026-10-09",
-        "version": "decisionnode-1.0-flash@acme/fraud:3",
+        "version": "decisionnode-flash@acme/fraud:3",
         "fine_tuned": True,
-        "base": "decisionnode-1.0-flash",
+        "base": "decisionnode-flash",
         "adapter_version": 3,
         "status": "deployed",
         "max_images": 16,
     }
-    ready = dict(deployed, name="decisionnode-1.0-flash@acme/fraud:4", adapter_version=4, status="ready")
+    ready = dict(deployed, name="decisionnode-flash@acme/fraud:4", adapter_version=4, status="ready")
     odd = dict(deployed, name="x", fine_tuned="yes", base=1, adapter_version=True, status=2)
     rec = Recorder(json_response(200, {"models": [catalogue, deployed, ready, odd]}))
     models = Harness(mode, rec).call("models")
     assert [(m.fine_tuned, m.base, m.adapter_version, m.status) for m in models] == [
         (None, None, None, None),
-        (True, "decisionnode-1.0-flash", 3, "deployed"),
-        (True, "decisionnode-1.0-flash", 4, "ready"),
+        (True, "decisionnode-flash", 3, "deployed"),
+        (True, "decisionnode-flash", 4, "ready"),
         (None, None, None, None),
     ]
     assert models[1].limits["adapter_version"] == 3 and models[1].limits["version"] == deployed["version"]
