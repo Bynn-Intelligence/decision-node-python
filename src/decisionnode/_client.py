@@ -30,7 +30,7 @@ from urllib.parse import quote, urlencode, urlsplit
 import httpx
 
 from . import _base
-from ._base import DEFAULT, MUTATION, SESSION_OPEN, UNSET, ImageInput, Settings
+from ._base import DEFAULT, MUTATION, OCR, SESSION_OPEN, UNSET, ImageInput, Settings
 from ._batches import (
     NDJSON,
     AsyncBatchResults,
@@ -45,7 +45,7 @@ from ._batches import (
     poll_wait,
     split_lines,
 )
-from ._boosters import BoosterInput, booster_wire
+from ._boosters import BoosterInput, booster_wire, names_ocr
 from ._errors import BadRequestError, ConnectionError, DecisionNodeError, ServerError, TimeoutError
 from ._images import Image
 from ._questions import Question
@@ -185,6 +185,24 @@ def _transport_error(exc: httpx.TransportError, timeout: float) -> DecisionNodeE
 
 def _timeout_error(timeout: float) -> DecisionNodeError:
     return TimeoutError("no response within %ss" % ("%g" % timeout))
+
+
+def _retry_without_answer(policy: str, error: DecisionNodeError) -> bool:
+    """Whether an attempt that got no answer (a timeout, a dropped connection) is retried.
+    A batch mutation never is; a decision naming ocr is not after a timeout, since the
+    server finishes that attempt and may bill it."""
+    if policy == MUTATION:
+        return False
+    return not (policy == OCR and isinstance(error, TimeoutError))
+
+
+def _ocr_send(settings: Settings, boosters: Any) -> Tuple[str, Optional[float]]:
+    """The retry policy and the attempt timeout of a decision: a decision whose boosters
+    name ocr waits OCR_TIMEOUT unless the caller set a timeout, and is never retried after
+    a timeout."""
+    if not names_ocr(boosters):
+        return DEFAULT, None
+    return OCR, None if settings.timeout_given else _base.OCR_TIMEOUT
 
 
 class _Attempt:
@@ -712,7 +730,8 @@ class DecisionNode(_Common):
         model: The model sent when a call names none. Default: ``DECISIONNODE_MODEL``,
             else ``decisionnode-moe``.
         timeout: Seconds one whole attempt may take, from sending the request to the
-            last byte of the response (default 10). Must be above 0.
+            last byte of the response (default 10; 30 for a decision whose boosters name
+            ``ocr``). Must be above 0. A timeout you set is used as given on every call.
         max_retries: Retries after the first attempt (default 2). Must be 0 or more.
         headers: Extra headers sent on every API request and session handshake (never
             to image storage).
@@ -745,7 +764,7 @@ class DecisionNode(_Common):
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
-        timeout: Optional[float] = _base.DEFAULT_TIMEOUT,
+        timeout: Optional[float] = None,
         max_retries: Optional[int] = _base.DEFAULT_MAX_RETRIES,
         headers: Optional[Mapping[str, str]] = None,
         http_client: Optional[httpx.Client] = None,
@@ -805,20 +824,22 @@ class DecisionNode(_Common):
         policy: str = DEFAULT,
         content_type: str = "application/json",
         query: Optional[Mapping[str, Any]] = None,
+        timeout: Optional[float] = None,
     ) -> _Response:
         settings = self._settings
         headers = settings.request_headers(content is not None, content_type)
         url = _url(settings, path, query)
+        limit = timeout or settings.timeout
         attempt = 0
         while True:
             started = time.monotonic()
             resp_headers: Optional[Dict[str, str]] = None
             try:
-                response, raw = _Attempt(self._http, method, url, content, headers, settings.timeout).run()
+                response, raw = _Attempt(self._http, method, url, content, headers, limit).run()
             except (httpx.TransportError, TimeoutError) as exc:
-                error = _transport_error(exc, settings.timeout) if isinstance(exc, httpx.TransportError) else exc
+                error = _transport_error(exc, limit) if isinstance(exc, httpx.TransportError) else exc
                 _base.log_response(method, path, type(error).__name__, None, started, attempt)
-                retry = policy != MUTATION
+                retry = _retry_without_answer(policy, error)
             else:
                 resp_headers = _base.lower_headers(response.headers)
                 status = response.status_code
@@ -1006,7 +1027,8 @@ class DecisionNode(_Common):
             if content is None:
                 content = self._body(prep, self._finish(plan))
             try:
-                return self._send("POST", prep.path, content)
+                policy, timeout = _ocr_send(self._settings, prep.boosters)
+                return self._send("POST", prep.path, content, policy, timeout=timeout)
             except BadRequestError as exc:
                 if attempt == 0 and plan.placed and exc.error_type in _base.STALE_UPLOAD:
                     self._cache.drop(plan.placed)
@@ -1440,7 +1462,7 @@ class AsyncDecisionNode(_Common):
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
-        timeout: Optional[float] = _base.DEFAULT_TIMEOUT,
+        timeout: Optional[float] = None,
         max_retries: Optional[int] = _base.DEFAULT_MAX_RETRIES,
         headers: Optional[Mapping[str, str]] = None,
         http_client: Optional[httpx.AsyncClient] = None,
@@ -1500,10 +1522,12 @@ class AsyncDecisionNode(_Common):
         policy: str = DEFAULT,
         content_type: str = "application/json",
         query: Optional[Mapping[str, Any]] = None,
+        timeout: Optional[float] = None,
     ) -> _Response:
         settings = self._settings
         headers = settings.request_headers(content is not None, content_type)
         url = _url(settings, path, query)
+        limit = timeout or settings.timeout
         attempt = 0
         while True:
             started = time.monotonic()
@@ -1516,21 +1540,21 @@ class AsyncDecisionNode(_Common):
                         url,
                         content=content,
                         headers=headers,
-                        timeout=settings.timeout,
+                        timeout=limit,
                         # Never followed, also on a client passed in: a redirect would send
                         # the key to another URL, possibly over plain HTTP.
                         follow_redirects=False,
                     ),
-                    settings.timeout,
+                    limit,
                 )
             except httpx.TransportError as exc:
-                error = _transport_error(exc, settings.timeout)
+                error = _transport_error(exc, limit)
                 _base.log_response(method, path, type(error).__name__, None, started, attempt)
-                retry = policy != MUTATION
+                retry = _retry_without_answer(policy, error)
             except asyncio.TimeoutError:
-                error = _timeout_error(settings.timeout)
+                error = _timeout_error(limit)
                 _base.log_response(method, path, type(error).__name__, None, started, attempt)
-                retry = policy != MUTATION
+                retry = _retry_without_answer(policy, error)
             else:
                 resp_headers = _base.lower_headers(response.headers)
                 status = response.status_code
@@ -1708,7 +1732,8 @@ class AsyncDecisionNode(_Common):
             if content is None:
                 content = self._body(prep, await self._finish(plan))
             try:
-                return await self._send("POST", prep.path, content)
+                policy, timeout = _ocr_send(self._settings, prep.boosters)
+                return await self._send("POST", prep.path, content, policy, timeout=timeout)
             except BadRequestError as exc:
                 if attempt == 0 and plan.placed and exc.error_type in _base.STALE_UPLOAD:
                     self._cache.drop(plan.placed)

@@ -42,6 +42,9 @@ logger = logging.getLogger("decisionnode")
 DEFAULT_BASE_URL = "https://api.decisionnode.com"
 DEFAULT_MODEL = "decisionnode-moe"
 DEFAULT_TIMEOUT = 10.0
+# One attempt of a decision whose boosters name ocr, when the caller set no timeout: the
+# booster reads the text before the model answers.
+OCR_TIMEOUT = 30.0
 # One storage PUT attempt of an image, apart from the API attempt's timeout: up to 10 MB
 # on a slower uplink than the API's answers need.
 DEFAULT_UPLOAD_TIMEOUT = 60.0
@@ -66,10 +69,13 @@ BATCHES_PATH = "/v1/batches"
 # (batch create, add and finalize): only 429 and 529, which the API answers before
 # applying anything; never after a timeout, a lost answer or another 5xx, since a repeat
 # could create a second draft. SESSION_OPEN: as DEFAULT, except that a 429
-# session_limit_exceeded is never retried.
+# session_limit_exceeded is never retried. OCR (a decision whose boosters name ocr): as
+# DEFAULT, except that a timeout is never retried, since the server finishes that attempt
+# and may bill it.
 DEFAULT = "default"
 MUTATION = "mutation"
 SESSION_OPEN = "session_open"
+OCR = "ocr"
 
 # A 400 for an upload the client placed in the request: it uploads again and sends the
 # request once more.
@@ -168,8 +174,10 @@ class Settings:
         self.base_url = check_base_url(str(url))
         self.model = model or os.environ.get("DECISIONNODE_MODEL") or DEFAULT_MODEL
         # The limit for one whole attempt, from sending the request to the last byte of
-        # the response body. Each network step is also bounded by it.
+        # the response body. Each network step is also bounded by it. Whether the caller
+        # set it: a decision naming ocr waits OCR_TIMEOUT unless a timeout was set.
         self.timeout = check_timeout(timeout)
+        self.timeout_given = timeout is not None
         self.max_retries = check_max_retries(max_retries)
         self.custom_headers: Dict[str, str] = dict(headers or {})
         self.inline_threshold = check_inline_threshold(inline_threshold)

@@ -19,6 +19,11 @@ __all__ = [
     "AgeReading",
     "AiGeneratedReading",
     "OcrReading",
+    "FaceBox",
+    "FaceDetection",
+    "FaceDetectionReading",
+    "WantedMatch",
+    "WantedPersonReading",
     "TopGenerator",
     "UnknownReading",
     "AnyReading",
@@ -87,6 +92,14 @@ def booster_wire(boosters: Any) -> Any:
         return boosters
     items = [b.wire() if isinstance(b, Booster) else b for b in boosters]
     return items or None
+
+
+def names_ocr(boosters: Any) -> bool:
+    """Whether a request's ``boosters`` field, as sent, names ``ocr``: by its bare name or
+    in the object form ``{"name": "ocr", ...}``."""
+    if not isinstance(boosters, list):
+        return False
+    return any(b == "ocr" or (isinstance(b, Mapping) and b.get("name") == "ocr") for b in boosters)
 
 
 # --------------------------------------------------------------------------- readings
@@ -186,7 +199,84 @@ class UnknownReading(Reading):
     reading whose fields are missing or of the wrong type. Read its fields from ``raw``."""
 
 
-AnyReading = Union[AgeReading, AiGeneratedReading, OcrReading, UnknownReading]
+@dataclass(frozen=True)
+class FaceBox:
+    """A face's box, by its corners: pixels of the image as sent, or fractions with four
+    decimals when every place question of the request asks for normalized units. The
+    numbers are as received.
+
+    Attributes:
+        x1: The left edge.
+        y1: The top edge.
+        x2: The right edge.
+        y2: The bottom edge.
+    """
+
+    x1: Union[int, float]
+    y1: Union[int, float]
+    x2: Union[int, float]
+    y2: Union[int, float]
+
+
+@dataclass(frozen=True)
+class FaceDetection:
+    """One face a ``face_detection`` reading found.
+
+    Attributes:
+        box: Where the face is.
+        confidence: From 0 to 1.
+    """
+
+    box: FaceBox
+    confidence: Union[int, float]
+
+
+@dataclass(frozen=True)
+class FaceDetectionReading(Reading):
+    """A reading of the ``face_detection`` booster: the faces in the picture.
+
+    Attributes:
+        faces: How many faces were found. It can be larger than ``detections``, which
+            lists at most 64.
+        detections: Each face's box and confidence, in the order received.
+    """
+
+    faces: int
+    detections: List[FaceDetection]
+
+
+@dataclass(frozen=True)
+class WantedMatch:
+    """A face that a ``wanted_person`` reading matched to an entry of the list.
+
+    Attributes:
+        box: Where the face is.
+        score: How well it matches, from 0 to 1.
+        reference: The id of the list entry it matches; never a name or any other
+            personal detail.
+    """
+
+    box: FaceBox
+    score: Union[int, float]
+    reference: str
+
+
+@dataclass(frozen=True)
+class WantedPersonReading(Reading):
+    """A reading of the ``wanted_person`` booster: the faces checked against the list.
+
+    Attributes:
+        faces: How many faces were checked.
+        matches: The faces that match an entry, empty when none does.
+    """
+
+    faces: int
+    matches: List[WantedMatch]
+
+
+AnyReading = Union[
+    AgeReading, AiGeneratedReading, OcrReading, FaceDetectionReading, WantedPersonReading, UnknownReading
+]
 
 
 @dataclass(frozen=True)
@@ -302,10 +392,56 @@ def _ocr(raw: Dict[str, Any]) -> OcrReading:
     return OcrReading(image=_string(raw, "image"), raw=raw, text=_string(raw, "text"), truncated=truncated)
 
 
+def _box(entry: Mapping[str, Any]) -> FaceBox:
+    box = entry.get("box")
+    if not isinstance(box, Mapping):
+        raise _Malformed("box")
+    return FaceBox(x1=_number(box, "x1"), y1=_number(box, "y1"), x2=_number(box, "x2"), y2=_number(box, "y2"))
+
+
+def _faces(raw: Mapping[str, Any]) -> int:
+    faces = _integer(raw, "faces")
+    if faces < 0:
+        raise _Malformed("faces")
+    return faces
+
+
+def _entries(raw: Mapping[str, Any], key: str) -> List[Mapping[str, Any]]:
+    found = raw.get(key)
+    if not isinstance(found, list) or not all(isinstance(e, Mapping) for e in found):
+        raise _Malformed(key)
+    return found
+
+
+def _face_detection(raw: Dict[str, Any]) -> FaceDetectionReading:
+    return FaceDetectionReading(
+        image=_string(raw, "image"),
+        raw=raw,
+        faces=_faces(raw),
+        detections=[
+            FaceDetection(box=_box(e), confidence=_number(e, "confidence")) for e in _entries(raw, "detections")
+        ],
+    )
+
+
+def _wanted_person(raw: Dict[str, Any]) -> WantedPersonReading:
+    return WantedPersonReading(
+        image=_string(raw, "image"),
+        raw=raw,
+        faces=_faces(raw),
+        matches=[
+            WantedMatch(box=_box(e), score=_number(e, "score"), reference=_string(e, "reference"))
+            for e in _entries(raw, "matches")
+        ],
+    )
+
+
 _READERS: Dict[str, Callable[[Dict[str, Any]], AnyReading]] = {
     "age": _age,
     "ai_generated": _ai_generated,
     "ocr": _ocr,
+    "face_detection": _face_detection,
+    "wanted_person": _wanted_person,
 }
 
 

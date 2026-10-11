@@ -358,6 +358,9 @@ answered exactly as before.
 |---|---|---|
 | `age` | A picture of a person | How old the person is, with a range and a confidence (the largest face is read) |
 | `ai_generated` | Any picture | How likely the picture was made by an image generator, which generator most likely, and whether the file carries Content Credentials (C2PA) and who signed them |
+| `face_detection` | Any picture | How many faces it shows and where, a box and a confidence per face; a picture with no face reads 0 faces |
+| `wanted_person` | A picture of a person | Whether a face matches an entry of a wanted-persons list: per face a box, a match score and the entry's reference id, never a name or any personal detail. Off by default: enabled for a workspace on request |
+| `ocr` | Any picture | The text it shows, all of it by default, or what a `prompt` asks for: a formula, a table, the fields of a JSON schema the prompt gives |
 
 ```python
 from decisionnode import Image, truth
@@ -402,6 +405,15 @@ d = dn.decide(
 |---|---|
 | `Booster(name, images=None, require=None, options=None)` | `images`: the ids of the request's images the booster reads; left out, every image. `require=True`: a booster that fails or does not answer in time fails the request with `OverloadedError` (`error_type` `booster_unavailable`), which is retried like every 529; left out, the decision runs without that reading and `evidence` says why. `options`: settings of a booster, for boosters that have any |
 
+Two boosters take options, and the API checks them: `ocr` takes `prompt`, what to read,
+at most 2,000 characters (`Booster("ocr", options={"prompt": "the invoice total and
+date"})`), and `wanted_person` takes `threshold`, a number from 0 to 1.
+
+A request whose boosters name `ocr` waits 30 seconds per attempt by default, since the
+booster reads the text before the model answers; a `timeout` you set on the client is used
+as given. It is never retried after a timeout, because the server finishes that attempt
+and may bill it: set a timeout of at least 30 seconds for requests that name `ocr`.
+
 It is sent as `{"name": "ai_generated", "images": ["c3d4"], "require": true}`, each setting
 only when given; a plain mapping in that form works too. A `Booster` with no setting is sent
 as its name, so the request stays the plain list.
@@ -424,7 +436,13 @@ before any charge. A booster added to the API works with this version of the pac
 |---|---|
 | `AgeReading` | `image`, `faces` (how many faces were found; the largest is read), and `age_years`, `low`, `high`, `confidence`, each `None` when `faces` is 0 |
 | `AiGeneratedReading` | `image`, `generated` (the probability that a generator made the picture), `confidence`, `method` (`inference`: read from the pixels; `c2pa`: the file's trusted Content Credentials declare it generated or edited by AI), `top_generator` (`name`, `probability` of the likeliest generator when the reading says likely generated; `None` otherwise, and always on a `c2pa` reading), `c2pa_signer` (who signed the file's Content Credentials when they are trusted, else `None`), `c2pa` (`untrusted` when the file carries Content Credentials that validate but are not trusted, which change nothing in the reading; else `None`) |
+| `OcrReading` | `image`, `text` (the text read, or the answer to the `prompt`; empty when the picture shows none, which is a reading, not a failure), `truncated` (`True` when the reading was cut at the model's context limit) |
+| `FaceDetectionReading` | `image`, `faces` (how many faces were found), `detections` (per face a `FaceDetection` with `box` and `confidence`, at most 64, so `faces` can be larger) |
+| `WantedPersonReading` | `image`, `faces` (how many faces were checked), `matches` (per matching face a `WantedMatch` with `box`, `score` and `reference`, the id of the list entry; empty when none matches) |
 | `UnknownReading` | `image` and `raw`: a reading of a booster this version does not know, or one with a field missing or of the wrong type. The decision does not fail |
+
+A `FaceBox` is a face's corners, `x1`, `y1`, `x2`, `y2`: pixels of the image as sent, or
+fractions when every place question of the request asks for normalized units, as received.
 
 Booster calls are billed from your prepaid balance with the request's tokens, one per
 booster and image read with status `ok`: a booster that timed out or failed is free, and so
@@ -768,14 +786,16 @@ The client does not close an `http_client` you pass in.
 
 ## Retries and timeouts
 
-Each attempt times out after 10 seconds. The timeout covers the whole attempt, from
+Each attempt times out after 10 seconds (30 for a request whose boosters name `ocr`,
+unless you set a timeout; see Boosters). The timeout covers the whole attempt, from
 sending the request to the last byte of the response body, so a server that answers
 slowly a little at a time cannot hold a call longer than that. A storage `PUT` of an
 image has its own deadline for the whole attempt, `upload_timeout` (60 seconds by
 default), since up to 10 MB may need longer than an answer does. Batch results are read
 from the network line by line as you iterate them, each read bounded by the timeout, so a
 file of any size is read whole. A failed request is retried twice on 408, 429,
-any 5xx (529 included), a timeout or a dropped connection. The wait is `retry-after-ms`
+any 5xx (529 included), a timeout or a dropped connection; a request naming `ocr` is not
+retried after a timeout, since the server finishes that attempt. The wait is `retry-after-ms`
 when the server sends it, else `Retry-After` in seconds or as an HTTP date, capped at
 60 seconds either way; without either, an exponential backoff from 0.5 seconds with
 jitter, capped at 8 seconds. A 408 still failing after its retries raises

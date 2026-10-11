@@ -271,6 +271,10 @@ def norm_answer(a: Any) -> Dict[str, Any]:
     return {"kind": "unknown", "type": a.type, "raw": a.raw}
 
 
+def norm_box(b: Any) -> Dict[str, Any]:
+    return {"x1": b.x1, "y1": b.y1, "x2": b.x2, "y2": b.y2}
+
+
 def norm_reading(r: Any) -> Dict[str, Any]:
     if isinstance(r, dn.AgeReading):
         fields = ("image", "faces", "age_years", "low", "high", "confidence")
@@ -289,6 +293,20 @@ def norm_reading(r: Any) -> Dict[str, Any]:
         }
     if isinstance(r, dn.OcrReading):
         return {"kind": "ocr", "image": r.image, "text": r.text, "truncated": r.truncated}
+    if isinstance(r, dn.FaceDetectionReading):
+        return {
+            "kind": "face_detection",
+            "image": r.image,
+            "faces": r.faces,
+            "detections": [{"box": norm_box(d.box), "confidence": d.confidence} for d in r.detections],
+        }
+    if isinstance(r, dn.WantedPersonReading):
+        return {
+            "kind": "wanted_person",
+            "image": r.image,
+            "faces": r.faces,
+            "matches": [{"box": norm_box(m.box), "score": m.score, "reference": m.reference} for m in r.matches],
+        }
     if not isinstance(r, dn.UnknownReading):
         raise Fail("reading of class %s is none of the reading types" % type(r).__name__)
     return {"kind": "unknown", "raw": r.raw}
