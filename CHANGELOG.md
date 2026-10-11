@@ -24,6 +24,9 @@ Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`).
   booster this version does not know or with a field missing or of the wrong type. `None`
   when the request named no boosters.
 - `Decision.usage.booster_tokens` and `Decision.usage.boosters` (`None` when absent).
+- `Usage.cost`: what the answer cost in USD, a `Cost` (`usd`, `model_usd`, `boosters_usd`,
+  `free_tier`) read as sent, on decisions, batch result lines, a session's open and frame
+  replies; `None` when absent, never zeros.
 - `DecisionNodeError.boosters`: the `x-decisionnode-boosters` header as booster name to
   `BoosterStatus` (`status`, `latency_ms`), on every error; empty when the header is absent.
 - Fine-tuned models: `ModelInfo.fine_tuned`, `base`, `adapter_version` and `status`

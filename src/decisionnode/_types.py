@@ -22,6 +22,7 @@ __all__ = [
     "BoxAnswer",
     "UnknownAnswer",
     "AnyAnswer",
+    "Cost",
     "Usage",
     "Safety",
     "Decision",
@@ -174,10 +175,48 @@ AnyAnswer = Union[TruthAnswer, ChoiceAnswer, ScoreAnswer, NumberAnswer, PointAns
 
 
 @dataclass(frozen=True)
+class Cost:
+    """What an answer cost, in USD, as the server sent it.
+
+    The amounts are the server's, never recomputed: ``usd`` is not summed from the parts,
+    since the server rounds each amount on its own. An amount of the wrong type is ``None``.
+
+    Attributes:
+        usd: The answer's whole cost.
+        model_usd: The model's share.
+        boosters_usd: The boosters' share.
+        free_tier: Whether the answer was drawn from the free tier.
+    """
+
+    usd: Optional[Union[int, float]] = None
+    model_usd: Optional[Union[int, float]] = None
+    boosters_usd: Optional[Union[int, float]] = None
+    free_tier: Optional[bool] = None
+
+
+def _amount(value: Any) -> Optional[Union[int, float]]:
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def parse_cost(value: Any) -> Optional[Cost]:
+    """``usage.cost`` as sent, or ``None`` when the usage has none (never zeros)."""
+    if not isinstance(value, Mapping):
+        return None
+    free = value.get("free_tier")
+    return Cost(
+        usd=_amount(value.get("usd")),
+        model_usd=_amount(value.get("model_usd")),
+        boosters_usd=_amount(value.get("boosters_usd")),
+        free_tier=free if isinstance(free, bool) else None,
+    )
+
+
+@dataclass(frozen=True)
 class Usage:
     """Token counts of one decision; for a request with videos also the frames and the
     seconds the server read, and for a request with boosters the readings' tokens and the
-    booster calls billed (``None`` otherwise)."""
+    booster calls billed (``None`` otherwise). ``cost`` is what the answer cost, as sent
+    (``None`` when the server sent none)."""
 
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
@@ -188,6 +227,8 @@ class Usage:
     # take, and the booster calls billed.
     booster_tokens: Optional[int] = None
     boosters: Optional[int] = None
+    # What the answer cost, as the server sent it.
+    cost: Optional[Cost] = None
 
 
 @dataclass(frozen=True)
@@ -458,6 +499,7 @@ def parse_decision(body: Any, headers: Mapping[str, str]) -> Decision:
             video_seconds=usage.get("video_seconds"),
             booster_tokens=usage.get("booster_tokens"),
             boosters=usage.get("boosters"),
+            cost=parse_cost(usage.get("cost")),
         ),
         request_id=headers.get("x-request-id"),
         latency_ms=parse_latency(headers.get("x-decisionnode-latency-ms")),

@@ -35,7 +35,7 @@ from urllib.parse import quote, urlsplit
 from . import _base
 from ._errors import ConnectionError, DecisionNodeError, NotFoundError, TimeoutError
 from ._images import Image
-from ._types import AnyAnswer, Safety, Usage, parse_answer
+from ._types import AnyAnswer, Safety, Usage, parse_answer, parse_cost
 
 if TYPE_CHECKING:
     from ._client import AsyncDecisionNode, DecisionNode
@@ -110,7 +110,11 @@ def _safety(value: Any) -> Optional[Safety]:
 def _usage(value: Any) -> Optional[Usage]:
     if not isinstance(value, Mapping):
         return None
-    return Usage(input_tokens=value.get("input_tokens"), output_tokens=value.get("output_tokens"))
+    return Usage(
+        input_tokens=value.get("input_tokens"),
+        output_tokens=value.get("output_tokens"),
+        cost=parse_cost(value.get("cost")),
+    )
 
 
 class Reply:

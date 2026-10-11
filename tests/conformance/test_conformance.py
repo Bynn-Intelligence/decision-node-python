@@ -32,7 +32,19 @@ import decisionnode as dn
 
 KINDS = ("requests", "responses", "errors", "behaviour", "constants")
 ENV_VARS = ("DECISIONNODE_API_KEY", "DECISIONNODE_BASE_URL", "DECISIONNODE_MODEL")
-EXACT = {"probabilities", "legend", "raw", "entries", "safety", "body", "limits", "evidence", "boosters", "fallback"}
+EXACT = {
+    "probabilities",
+    "legend",
+    "raw",
+    "entries",
+    "safety",
+    "body",
+    "limits",
+    "evidence",
+    "boosters",
+    "fallback",
+    "cost",
+}
 # Compared whole and in their key order too: evidence in the request's order, an
 # error's boosters in the header's.
 ORDERED = {"evidence", "boosters"}
@@ -308,6 +320,12 @@ def norm_model(m: Any, expected: Any) -> Dict[str, Any]:
     return out
 
 
+def norm_cost(c: Optional[dn.Cost]) -> Optional[Dict[str, Any]]:
+    if c is None:
+        return None
+    return {"usd": c.usd, "model_usd": c.model_usd, "boosters_usd": c.boosters_usd, "free_tier": c.free_tier}
+
+
 def norm_safety(s: Optional[dn.Safety]) -> Optional[Dict[str, Any]]:
     return None if s is None else s.to_dict()
 
@@ -328,6 +346,7 @@ def norm_decision(d: dn.Decision) -> Dict[str, Any]:
             "video_seconds": d.usage.video_seconds,
             "booster_tokens": d.usage.booster_tokens,
             "boosters": d.usage.boosters,
+            "cost": norm_cost(d.usage.cost),
         },
         "evidence": norm_evidence(d.evidence),
         "fallback": norm_fallback(d.fallback),

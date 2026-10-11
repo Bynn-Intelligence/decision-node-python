@@ -140,6 +140,7 @@ The thresholds are yours: the SDK never turns a probability into a decision.
 | `usage.input_tokens`, `usage.output_tokens` | Token counts, or `None` when the server sent none (never `0` in their place). |
 | `usage.video_frames`, `usage.video_seconds` | For a request with videos: the frames the server read and the seconds of video they cover; `None` otherwise. |
 | `usage.booster_tokens`, `usage.boosters` | For a request with boosters: the share of `input_tokens` the boosters' readings take, and the booster calls billed; `None` otherwise. |
+| `usage.cost` | What the answer cost in USD, as a `Cost`: `usd`, `model_usd`, `boosters_usd` and `free_tier`, read as the server sent them and never summed by the SDK; `None` when the server sent none. A session's open and each frame reply carry their own. |
 | `evidence` | For a request with boosters: what each booster read (below); `None` otherwise. |
 | `fallback` | On a fallback answer, the model that answered and the model asked for (below); `None` otherwise. |
 | `warnings` | What the server changed when it read the request's videos (a lower rate or size), as sent; an empty list when there is nothing to say. |
