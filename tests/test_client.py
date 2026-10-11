@@ -777,6 +777,9 @@ class DripServer:
         self.sock.listen(8)
         self.url = "http://127.0.0.1:%d" % self.sock.getsockname()[1]
         self.connections = 0
+        # Set on close, so no drip thread outlives the test. It also paces the drip:
+        # waiting on it is not time.sleep, which later tests record as retry waits.
+        self.closed = threading.Event()
         threading.Thread(target=self._serve, daemon=True).start()
 
     def _serve(self) -> None:
@@ -797,13 +800,15 @@ class DripServer:
             conn.sendall(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: %d\r\n\r\n" % len(body))
             for i in range(len(body)):
                 conn.sendall(body[i : i + 1])
-                time.sleep(0.05)
+                if self.closed.wait(0.05):
+                    break
         except OSError:
             pass
         finally:
             conn.close()
 
     def close(self) -> None:
+        self.closed.set()
         self.sock.close()
 
 
