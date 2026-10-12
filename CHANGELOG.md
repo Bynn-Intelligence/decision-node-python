@@ -10,6 +10,11 @@ Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`).
 
 ### Added
 
+- Several places in one answer: `point()` and `box()` take `max` (2 to 16), and the
+  answer is a `PointsAnswer` or `BoxesAnswer` (`count`, `present`, `complete`, `points`
+  of `PointPlace` or `boxes` of `BoxPlace`, `image`, `width`, `height`), told by its own
+  list, in the order and numbers sent. `max` (a whole number from 2 to 16) is checked
+  before sending; whether a model version answers several places is the API's to say.
 - Boosters: `boosters` on `decide`, `check`, `classify`, `score`, `number`, `gate`,
   `decide_many` requests, batch requests and `check_request`, as booster names,
   `Booster(name, images, require, options)` objects (sent as `{"name": ...}` with each
@@ -24,6 +29,25 @@ Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`).
   booster this version does not know or with a field missing or of the wrong type. `None`
   when the request named no boosters.
 - `Decision.usage.booster_tokens` and `Decision.usage.boosters` (`None` when absent).
+- The readings of the `ocr`, `face_detection` and `face_recognition` boosters: `OcrReading`
+  (`text`, `truncated`), `FaceDetectionReading` (`faces`, `detections` of `FaceDetection`
+  with a `FaceBox` and a `confidence`) and `FaceRecognitionReading` (`faces`, `matches` of
+  `FaceMatch` with a `FaceBox`, a `score`, the `collection` searched, the item's
+  `reference`, and `name` or `label`, `None` when absent). Box corners are kept as
+  received. A malformed reading is an `UnknownReading`.
+- Collections of faces, as `dn.collections`: `create`, `list`, `get`, `delete`, `enroll`
+  (one face from one image, sent as a decision's image is), `list_items` and
+  `delete_item`, each returning the API's object as sent. `create` and `enroll` send an
+  `Idempotency-Key`, a new UUID per call and the same on every attempt of it, so the API
+  creates, enrolls and bills once; they retry like any call, and also while the API
+  reports the first attempt still running (a 409 `idempotency_in_progress`, after its
+  `Retry-After`). A 409 `idempotency_key_reused` is raised and never retried. A
+  collection's type and name, an item's reference and label and the items list's `offset`
+  and `limit` are checked before anything is sent; of the picture only a URL's rules are,
+  every other fault is the API's 422 `image_unreadable`.
+- A decision whose boosters name `ocr` waits 30 seconds per attempt unless a `timeout` was
+  set on the client, and is never retried after a timeout, since the server finishes that
+  attempt and may bill it; its other retries stay.
 - `Usage.cost`: what the answer cost in USD, a `Cost` (`usd`, `model_usd`, `boosters_usd`,
   `free_tier`) read as sent, on decisions, batch result lines, a session's open and frame
   replies; `None` when absent, never zeros.
