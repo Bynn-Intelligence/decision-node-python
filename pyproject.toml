@@ -41,6 +41,7 @@ http2 = [
 [project.urls]
 Homepage = "https://decisionnode.com"
 Repository = "https://github.com/Bynn-Intelligence/decision-node-python"
+Changelog = "https://github.com/Bynn-Intelligence/decision-node-python/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
@@ -52,7 +53,10 @@ dev = [
 ]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/decisionnode", "tests", "README.md", "CHANGELOG.md", "LICENSE"]
+# What is published and nothing else: the release workflow checks the built files
+# against this list.
+only-include = ["src/decisionnode", "README.md", "CHANGELOG.md", "LICENSE"]
+exclude = ["__pycache__", "*.pyc"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/decisionnode"]
