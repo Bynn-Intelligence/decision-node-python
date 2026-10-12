@@ -37,9 +37,14 @@ Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`).
   received. A malformed reading is an `UnknownReading`.
 - Collections of faces, as `dn.collections`: `create`, `list`, `get`, `delete`, `enroll`
   (one face from one image, sent as a decision's image is), `list_items` and
-  `delete_item`, each returning the API's object as sent. `create` and `enroll` are
-  retried only on 429 and 529. A collection's type and name, an item's reference and
-  label and the items list's `offset` and `limit` are checked before anything is sent.
+  `delete_item`, each returning the API's object as sent. `create` and `enroll` send an
+  `Idempotency-Key`, a new UUID per call and the same on every attempt of it, so the API
+  creates, enrolls and bills once; they retry like any call, and also while the API
+  reports the first attempt still running (a 409 `idempotency_in_progress`, after its
+  `Retry-After`). A 409 `idempotency_key_reused` is raised and never retried. A
+  collection's type and name, an item's reference and label and the items list's `offset`
+  and `limit` are checked before anything is sent; of the picture only a URL's rules are,
+  every other fault is the API's 422 `image_unreadable`.
 - A decision whose boosters name `ocr` waits 30 seconds per attempt unless a `timeout` was
   set on the client, and is never retried after a timeout, since the server finishes that
   attempt and may bill it; its other retries stay.

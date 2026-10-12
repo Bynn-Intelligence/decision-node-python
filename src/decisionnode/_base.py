@@ -72,11 +72,15 @@ COLLECTIONS_PATH = "/v1/collections"
 # could create a second draft. SESSION_OPEN: as DEFAULT, except that a 429
 # session_limit_exceeded is never retried. OCR (a decision whose boosters name ocr): as
 # DEFAULT, except that a timeout is never retried, since the server finishes that attempt
-# and may bill it.
+# and may bill it. IDEMPOTENT (collections create and enroll, which carry their own
+# Idempotency-Key, the same on every attempt): as DEFAULT, and also a 409
+# idempotency_in_progress, after its Retry-After; a 409 idempotency_key_reused is raised.
 DEFAULT = "default"
 MUTATION = "mutation"
 SESSION_OPEN = "session_open"
 OCR = "ocr"
+IDEMPOTENT = "idempotent"
+IDEMPOTENCY_IN_PROGRESS = "idempotency_in_progress"
 
 # A 400 for an upload the client placed in the request: it uploads again and sends the
 # request once more.
@@ -299,6 +303,8 @@ def should_retry(policy: str, status: int, error: DecisionNodeError) -> bool:
         return status in (429, 529)
     if policy == SESSION_OPEN and isinstance(error, SessionLimitError):
         return False
+    if policy == IDEMPOTENT and status == 409:
+        return error.error_type == IDEMPOTENCY_IN_PROGRESS
     return status in RETRY_STATUSES
 
 

@@ -979,6 +979,24 @@ def check_counts(expected: List[Dict[str, Any]], log: List[Dict[str, Any]]) -> N
         in_range({k: spec[k] for k in ("min", "max") if k in spec}, n, what)
 
 
+def check_same_header(spec: Dict[str, Any], log: List[Dict[str, Any]]) -> None:
+    """Every matching attempt carries one and the same value of the header (suite 1.13: an
+    Idempotency-Key kept across retries), at least ``min`` of them (2 by default)."""
+    name = spec["name"].lower()
+    hits = [
+        r
+        for r in log
+        if (spec.get("path_suffix") is None or r["path"].endswith(spec["path_suffix"]))
+        and (spec.get("method") is None or r["method"] == spec["method"])
+    ]
+    values = [{k.lower(): v for k, v in r["headers"].items()}.get(name) for r in hits]
+    if len(hits) < spec.get("min", 2) or None in values or len(set(values)) != 1:
+        raise Fail("same_header %s: expected one value on every attempt, got %s" % (name, values))
+    pattern = spec.get("pattern")
+    if pattern and not re.search(pattern, values[0] or ""):
+        raise Fail("same_header %s: %r does not match %s" % (name, values[0], pattern))
+
+
 def check_events(expected: List[Dict[str, Any]], events: List[Dict[str, Any]]) -> None:
     if len(expected) != len(events):
         raise Fail("session events: expected %d, got %d: %s" % (len(expected), len(events), short(events)))
@@ -1216,6 +1234,8 @@ async def run_behaviour(case: Dict[str, Any], mock: Mock, mode: str, env: pytest
         check_sequence(exp["request_sequence"], log)
     if "request_counts" in exp:
         check_counts(exp["request_counts"], log)
+    if "same_header" in exp:
+        check_same_header(exp["same_header"], log)
     if "session_events" in exp:
         check_events(exp["session_events"], events)
     if "pongs" in exp:

@@ -61,7 +61,7 @@ PLACES_MIN, PLACES_MAX = 2, 16
 COLLECTION_TYPES = ("face",)
 COLLECTION_NAME_MAX = 80
 ITEM_REFERENCE_MAX = 64
-ITEM_REFERENCE_PATTERN = "^[A-Za-z0-9_.:-]+$"
+ITEM_REFERENCE_PATTERN = "^[A-Za-z0-9_.:-]{1,64}$"
 ITEM_LABEL_MAX = 128
 UNITS = ("pixels", "normalized")
 Entry = Tuple[Dict[str, Any], Optional[str]]
@@ -898,16 +898,33 @@ def check_collection(kind: Any, name: Any) -> None:
 
 
 def check_item(image: Any, reference: Any, label: Any) -> None:
-    """An enrollment's fields, as the API checks them; the image is then checked as a
-    decision's image."""
+    """An enrollment's fields, as the API checks them. An empty reference fails the
+    pattern, as the API answers it; of the picture only a URL's rules are checked here."""
     entries: List[Entry] = []
     if image is None:
         entries.append((_entry("missing", ["body", "image"], "Field required", {"reference": reference}), None))
-    entries.extend(_string_entries(["body", "reference"], reference, 1, ITEM_REFERENCE_MAX, ITEM_REFERENCE_PATTERN))
+    if reference is None:
+        entries.append((_entry("missing", ["body", "reference"], "Field required", None), None))
+    else:
+        entries.extend(_string_entries(["body", "reference"], reference, 0, ITEM_REFERENCE_MAX, ITEM_REFERENCE_PATTERN))
     if label is not None:
         entries.extend(_string_entries(["body", "label"], label, 0, ITEM_LABEL_MAX))
     if entries:
         _raise_422(entries)
+
+
+def check_enroll_image(image: Any) -> None:
+    """An enrollment's picture: only a URL's rules are a decision's (``image_url_refused``,
+    or ``api_usage_error`` for a URL that is not https). Every other fault of the picture
+    is the server's 422 ``image_unreadable``, which no client can foresee."""
+    if isinstance(image, Image):
+        if image.url is not None:
+            check_url(image.id, image.url)
+    elif isinstance(image, Mapping):
+        if image.get("url") is not None:
+            check_url(str(image.get("id")), image.get("url"))
+    else:
+        raise ValueError("image must be an Image or a wire-form mapping, got %r" % (image,))
 
 
 def check_list_query(offset: Any, limit: Any) -> None:

@@ -6,8 +6,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import httpx
 import pytest
@@ -178,34 +179,93 @@ def test_delete_item(mode: str) -> None:
 # --------------------------------------------------------------------------- retries
 
 
+WRITES: Dict[str, Dict[str, Any]] = {
+    "create": {"name": "Staff"},
+    "enroll": {"collection_id": COL, "image": URL_IMAGE, "reference": "r"},
+}
+# A one-pixel GIF: a format the API does not read.
+GIF = (
+    b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00"
+    b",\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
+)
+UUID4 = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+
+
+def keys(rec: Recorder) -> List[Optional[str]]:
+    return [r.headers.get("idempotency-key") for r in rec.requests]
+
+
 @pytest.mark.parametrize("call", ["create", "enroll"])
-def test_writes_are_not_retried_on_a_5xx_or_a_lost_answer(
+def test_writes_carry_an_idempotency_key_kept_across_retries(
     mode: str, call: str, sleeps: List[float], fast_backoff: None
 ) -> None:
-    args: Dict[str, Any] = {
-        "create": {"name": "Staff"},
-        "enroll": {"collection_id": COL, "image": URL_IMAGE, "reference": "r"},
-    }[call]
-    rec = Recorder(error_body(500, "api_error", "boom"), json_response(201, COLLECTION))
-    assert isinstance(Harness(mode, rec).error(call, **args), dn.ServerError)
-    assert len(rec.requests) == 1
-    lost = Recorder(httpx.ConnectError("dropped"), json_response(201, COLLECTION))
-    assert isinstance(Harness(mode, lost).error(call, **args), dn.ConnectionError)
-    assert len(lost.requests) == 1
+    # A 5xx, a dropped connection and a 529 are retried, every attempt with the same key.
+    rec = Recorder(
+        error_body(500, "api_error", "boom"),
+        httpx.ConnectError("dropped"),
+        json_response(201, COLLECTION),
+    )
+    Harness(mode, rec, max_retries=3).call(call, **WRITES[call])
+    sent = keys(rec)
+    assert len(sent) == 3 and len(set(sent)) == 1 and UUID4.match(sent[0] or "")
 
 
-@pytest.mark.parametrize("status", [429, 529])
 @pytest.mark.parametrize("call", ["create", "enroll"])
-def test_writes_are_retried_on_429_and_529(
-    mode: str, call: str, status: int, sleeps: List[float], fast_backoff: None
-) -> None:
+def test_each_call_gets_a_new_key(mode: str, call: str) -> None:
+    rec = Recorder(json_response(201, COLLECTION))
+    h = Harness(mode, rec)
+    h.call(call, **WRITES[call])
+    h.call(call, **WRITES[call])
+    first, second = keys(rec)
+    assert first and second and first != second
+
+
+@pytest.mark.parametrize("call", ["create", "enroll"])
+def test_in_progress_is_retried_after_its_retry_after(mode: str, call: str, sleeps: List[float]) -> None:
+    busy = json_response(
+        409,
+        {
+            "detail": {
+                "error_type": "idempotency_in_progress",
+                "message": "A request with this Idempotency-Key is still running. Try again shortly.",
+            }
+        },
+        {"retry-after": "1"},
+    )
+    rec = Recorder(busy, json_response(201, COLLECTION))
+    Harness(mode, rec).call(call, **WRITES[call])
+    assert len(rec.requests) == 2 and len(set(keys(rec))) == 1 and sleeps == [1.0]
+
+
+@pytest.mark.parametrize("call", ["create", "enroll"])
+def test_a_reused_key_is_raised_and_never_retried(mode: str, call: str, sleeps: List[float]) -> None:
+    reused = error_body(
+        409, "idempotency_key_reused", "This Idempotency-Key was already used with a different request."
+    )
+    rec = Recorder(reused, json_response(201, COLLECTION))
+    err = Harness(mode, rec).error(call, **WRITES[call])
+    assert type(err) is dn.DecisionNodeError and (err.status, err.error_type) == (409, "idempotency_key_reused")
+    assert len(rec.requests) == 1 and sleeps == []
+
+
+def test_a_replay_is_returned_as_sent(mode: str) -> None:
+    rec = Recorder(json_response(201, ITEM, {"x-decisionnode-idempotent-replay": "true"}))
+    assert Harness(mode, rec).call("enroll", COL, URL_IMAGE, "emp-1042") == ITEM
+
+
+@pytest.mark.parametrize("call", ["get", "list", "delete", "list_items", "delete_item"])
+def test_reads_and_deletes_carry_no_key(mode: str, call: str) -> None:
     args: Dict[str, Any] = {
-        "create": {"name": "Staff"},
-        "enroll": {"collection_id": COL, "image": URL_IMAGE, "reference": "r"},
+        "get": {"collection_id": COL},
+        "list": {},
+        "delete": {"collection_id": COL},
+        "list_items": {"collection_id": COL},
+        "delete_item": {"collection_id": COL, "item_id": ITM},
     }[call]
-    rec = Recorder(error_body(status, "overloaded_error", "busy"), json_response(201, COLLECTION))
+    body = {"collections": []} if call == "list" else COLLECTION
+    rec = Recorder(json_response(200, body))
     Harness(mode, rec).call(call, **args)
-    assert len(rec.requests) == 2
+    assert keys(rec) == [None]
 
 
 @pytest.mark.parametrize("call", ["get", "list", "delete", "list_items", "delete_item"])
@@ -269,14 +329,22 @@ def test_enroll_checks(mode: str) -> None:
         (e,) = local_entries(mode, "enroll", **args)
         return e
 
-    assert entry(reference="")["type"] == "string_too_short"
+    pattern = "^[A-Za-z0-9_.:-]{1,64}$"
+    # An empty reference fails the pattern, as the API answers it.
+    for bad in ("", "emp 1042"):
+        assert entry(reference=bad) == {
+            "type": "string_pattern_mismatch",
+            "loc": ["body", "reference"],
+            "msg": "String should match pattern '%s'" % pattern,
+            "input": bad,
+            "ctx": {"pattern": pattern},
+        }
     assert entry(reference="e" * 65)["ctx"] == {"max_length": 64}
-    assert entry(reference="emp 1042") == {
-        "type": "string_pattern_mismatch",
+    assert entry(reference=None) == {
+        "type": "missing",
         "loc": ["body", "reference"],
-        "msg": "String should match pattern '^[A-Za-z0-9_.:-]+$'",
-        "input": "emp 1042",
-        "ctx": {"pattern": "^[A-Za-z0-9_.:-]+$"},
+        "msg": "Field required",
+        "input": None,
     }
     assert entry(label="l" * 129) == {
         "type": "string_too_long",
@@ -291,10 +359,26 @@ def test_enroll_checks(mode: str) -> None:
     assert len(rec.requests) == 1
 
 
-def test_enroll_checks_the_image_as_a_decision_does(mode: str) -> None:
+def test_enroll_checks_only_a_url_of_the_picture(mode: str) -> None:
     rec = Recorder(json_response(201, ITEM))
     err = Harness(mode, rec).error("enroll", COL, dn.Image("badge", url="http://files.example.com/a.jpg"), "r")
     assert isinstance(err, dn.BadRequestError) and rec.requests == []
+    port = dn.Image("badge", url="https://files.example.com:8443/a.jpg")
+    err = Harness(mode, rec).error("enroll", COL, port, "r")
+    assert isinstance(err, dn.BadRequestError) and err.error_type == "image_url_refused" and rec.requests == []
+    # Any other fault of the picture is the server's 422 image_unreadable: a GIF is sent.
+    gif = dn.Image("badge", data=GIF)
+    unreadable = [
+        {
+            "type": "image_unreadable",
+            "loc": ["body", "image"],
+            "msg": "The image could not be read: not a JPEG, PNG or WebP image.",
+            "input": "badge",
+        }
+    ]
+    sent = Recorder(json_response(422, {"detail": unreadable}))
+    err = Harness(mode, sent).error("enroll", COL, gif, "r")
+    assert isinstance(err, dn.ValidationError) and err.entries == unreadable and len(sent.requests) == 1
 
 
 @pytest.mark.parametrize(

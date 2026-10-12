@@ -7,6 +7,7 @@ import base64
 import ssl
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from types import TracebackType
 from typing import (
@@ -31,7 +32,7 @@ from urllib.parse import quote, urlencode, urlsplit
 import httpx
 
 from . import _base
-from ._base import DEFAULT, MUTATION, OCR, SESSION_OPEN, UNSET, ImageInput, Settings
+from ._base import DEFAULT, IDEMPOTENT, MUTATION, OCR, SESSION_OPEN, UNSET, ImageInput, Settings
 from ._batches import (
     NDJSON,
     AsyncBatchResults,
@@ -92,6 +93,7 @@ from ._validate import (
     MAX_UPLOAD_FILES,
     check_body_size,
     check_collection,
+    check_enroll_image,
     check_frame,
     check_images,
     check_item,
@@ -197,6 +199,12 @@ def _retry_without_answer(policy: str, error: DecisionNodeError) -> bool:
     if policy == MUTATION:
         return False
     return not (policy == OCR and isinstance(error, TimeoutError))
+
+
+def _idempotency_key() -> Dict[str, str]:
+    """A new Idempotency-Key for one call: a random UUID (version 4), sent unchanged on
+    every attempt of that call."""
+    return {"Idempotency-Key": str(uuid.uuid4())}
 
 
 def _ocr_send(settings: Settings, boosters: Any) -> Tuple[str, Optional[float]]:
@@ -849,9 +857,13 @@ class DecisionNode(_Common):
         content_type: str = "application/json",
         query: Optional[Mapping[str, Any]] = None,
         timeout: Optional[float] = None,
+        extra_headers: Optional[Mapping[str, str]] = None,
     ) -> _Response:
         settings = self._settings
         headers = settings.request_headers(content is not None, content_type)
+        if extra_headers:
+            # The same on every attempt: an Idempotency-Key is the call's, not the attempt's.
+            headers.update(extra_headers)
         url = _url(settings, path, query)
         limit = timeout or settings.timeout
         attempt = 0
@@ -886,8 +898,11 @@ class DecisionNode(_Common):
         policy: str = DEFAULT,
         content_type: str = "application/json",
         query: Optional[Mapping[str, Any]] = None,
+        extra_headers: Optional[Mapping[str, str]] = None,
     ) -> Tuple[int, Dict[str, str], Any]:
-        status, headers, text = self._send(method, path, content, policy, content_type, query)
+        status, headers, text = self._send(
+            method, path, content, policy, content_type, query, extra_headers=extra_headers
+        )
         return status, headers, _base.parse_json(status, headers, text)
 
     def _open_stream(self, path: str) -> httpx.Response:
@@ -1475,8 +1490,10 @@ class Collections:
     """Collections of faces, as ``dn.collections``: a workspace's own, and the public
     ones it may search. Every call returns the API's object as sent.
 
-    ``create`` and ``enroll`` are retried only on 429 and 529, never after a timeout, a
-    lost answer or a 5xx: a repeat could enroll the face, and bill it, twice.
+    ``create`` and ``enroll`` send an ``Idempotency-Key``, a new UUID per call and the
+    same on every attempt of it, so the API creates, enrolls and bills once however often
+    the call is tried; they then retry like any call, and also while the API reports the
+    first attempt still running. Reads and deletes carry no key.
     """
 
     def __init__(self, client: DecisionNode) -> None:
@@ -1486,7 +1503,9 @@ class Collections:
         """Create a collection of the workspace."""
         check_collection(type, name)
         content = _base.encode({"type": type, "name": name})
-        _, _, body = self._client._json("POST", _base.COLLECTIONS_PATH, content, MUTATION)
+        _, _, body = self._client._json(
+            "POST", _base.COLLECTIONS_PATH, content, IDEMPOTENT, extra_headers=_idempotency_key()
+        )
         return cast(Dict[str, Any], body)
 
     def list(self) -> List[Dict[str, Any]]:
@@ -1513,12 +1532,12 @@ class Collections:
         check_item(image, reference, label)
         client = self._client
         imgs = _base.image_list(image)
-        check_images(imgs, client._limits())
+        check_enroll_image(imgs[0])
         wires = client._finish(client._plan(imgs))
         item: Dict[str, Any] = {"image": wires[0], "reference": reference}
         if label is not None:
             item["label"] = label
-        _, _, body = client._json("POST", path, _base.encode(item), MUTATION)
+        _, _, body = client._json("POST", path, _base.encode(item), IDEMPOTENT, extra_headers=_idempotency_key())
         return cast(Dict[str, Any], body)
 
     def list_items(
@@ -1612,9 +1631,13 @@ class AsyncDecisionNode(_Common):
         content_type: str = "application/json",
         query: Optional[Mapping[str, Any]] = None,
         timeout: Optional[float] = None,
+        extra_headers: Optional[Mapping[str, str]] = None,
     ) -> _Response:
         settings = self._settings
         headers = settings.request_headers(content is not None, content_type)
+        if extra_headers:
+            # The same on every attempt: an Idempotency-Key is the call's, not the attempt's.
+            headers.update(extra_headers)
         url = _url(settings, path, query)
         limit = timeout or settings.timeout
         attempt = 0
@@ -1666,8 +1689,11 @@ class AsyncDecisionNode(_Common):
         policy: str = DEFAULT,
         content_type: str = "application/json",
         query: Optional[Mapping[str, Any]] = None,
+        extra_headers: Optional[Mapping[str, str]] = None,
     ) -> Tuple[int, Dict[str, str], Any]:
-        status, headers, text = await self._send(method, path, content, policy, content_type, query)
+        status, headers, text = await self._send(
+            method, path, content, policy, content_type, query, extra_headers=extra_headers
+        )
         return status, headers, _base.parse_json(status, headers, text)
 
     async def _open_stream(self, path: str) -> httpx.Response:
@@ -2193,7 +2219,9 @@ class AsyncCollections:
         """Create a collection of the workspace."""
         check_collection(type, name)
         content = _base.encode({"type": type, "name": name})
-        _, _, body = await self._client._json("POST", _base.COLLECTIONS_PATH, content, MUTATION)
+        _, _, body = await self._client._json(
+            "POST", _base.COLLECTIONS_PATH, content, IDEMPOTENT, extra_headers=_idempotency_key()
+        )
         return cast(Dict[str, Any], body)
 
     async def list(self) -> List[Dict[str, Any]]:
@@ -2219,12 +2247,12 @@ class AsyncCollections:
         check_item(image, reference, label)
         client = self._client
         imgs = _base.image_list(image)
-        check_images(imgs, client._limits())
+        check_enroll_image(imgs[0])
         wires = await client._finish(client._plan(imgs))
         item: Dict[str, Any] = {"image": wires[0], "reference": reference}
         if label is not None:
             item["label"] = label
-        _, _, body = await client._json("POST", path, _base.encode(item), MUTATION)
+        _, _, body = await client._json("POST", path, _base.encode(item), IDEMPOTENT, extra_headers=_idempotency_key())
         return cast(Dict[str, Any], body)
 
     async def list_items(
