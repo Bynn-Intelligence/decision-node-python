@@ -334,10 +334,8 @@ if cars.complete < 0.5:
 | `points` or `boxes` | The places (`PointPlace` with `x`, `y`, `confidence`; `BoxPlace` with `x1`, `y1`, `x2`, `y2`, `confidence`), left to right by the centre, ties from the top; an empty list when none is found |
 | `image`, `width`, `height` | As for one place |
 
-`max` is a whole number from 2 to 16, checked before anything is sent. A model version
-that does not answer several places says so in `models()`; once the client holds that
-list, a question with `max` for such a version raises `ValidationError` before anything
-is sent. `decide`, `decide_many` and batch requests take `max`.
+`max` is a whole number from 2 to 16, checked before anything is sent. `decide`,
+`decide_many` and batch requests take `max`.
 
 A point or box question needs an image in the request. With two or more images, name the
 one to look in with `image`, the image's id; a reference by number ("Picture 2") goes in

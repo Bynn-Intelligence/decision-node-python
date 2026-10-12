@@ -13,9 +13,8 @@ Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`).
 - Several places in one answer: `point()` and `box()` take `max` (2 to 16), and the
   answer is a `PointsAnswer` or `BoxesAnswer` (`count`, `present`, `complete`, `points`
   of `PointPlace` or `boxes` of `BoxPlace`, `image`, `width`, `height`), told by its own
-  list, in the order and numbers sent. `max` is checked before sending, and a model
-  version whose `models()` entry holds no `places.max_places` refuses it locally with the
-  API's `ValidationError` `not_supported` once the client holds that list.
+  list, in the order and numbers sent. `max` (a whole number from 2 to 16) is checked
+  before sending; whether a model version answers several places is the API's to say.
 - Boosters: `boosters` on `decide`, `check`, `classify`, `score`, `number`, `gate`,
   `decide_many` requests, batch requests and `check_request`, as booster names,
   `Booster(name, images, require, options)` objects (sent as `{"name": ...}` with each

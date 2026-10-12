@@ -163,46 +163,18 @@ def test_max_at_the_bounds_is_sent(mode: str) -> None:
     assert [b["questions"]["cars"]["max"] for b in sent(h)] == [2, 16]
 
 
-@pytest.mark.parametrize("places", [None, {"max_places": 0}, {}])
-def test_held_model_without_places_refuses_max(mode: str, places: Any) -> None:
+@pytest.mark.parametrize("places", [None, {"max_places": 0}, {}, {"max_places": 16}])
+def test_max_is_sent_whatever_models_lists(mode: str, places: Any) -> None:
+    # Whether a version answers several places is the server's to say: a held models()
+    # entry without places.max_places changes nothing before sending.
     entry = dict(MOE, places=places) if places is not None else dict(MOE)
     h = Harness(mode, server({}, [entry]))
-    h.call("models")
-    questions = {
-        "cars": dn.box(CARS, max=8),
-        "people": dn.point(PEOPLE, max=6),
-        "one": dn.box(CARS),
-        # A fault the other checks would list comes after: the capability is checked first.
-        "bad": {"type": "score", "instructions": "?", "criteria": []},
-    }
-    expected = [
-        {
-            "type": "not_supported",
-            "loc": ["body", "questions", "cars", "box", "max"],
-            "msg": "Several places are not supported by this model version",
-            "input": 8,
-        },
-        {
-            "type": "not_supported",
-            "loc": ["body", "questions", "people", "point", "max"],
-            "msg": "Several places are not supported by this model version",
-            "input": 6,
-        },
-    ]
-    assert refused(h, "decide", questions=questions, images=[LOT]) == expected
-    many = [{"questions": {"cars": dn.box(CARS, max=8)}, "images": [LOT]}]
-    assert refused(h, "decide_many", many) == expected[:1]
-    lines = [{"custom_id": "c1", "questions": {"cars": dn.box(CARS, max=8)}, "images": [LOT]}]
-    assert refused(h, "batches.create", lines) == expected[:1]
-
-
-def test_held_model_with_places_or_nothing_held_sends_max(mode: str) -> None:
-    h = Harness(mode, server({}, [dict(MOE, places={"max_places": 16})]))
     h.call("models")
     h.call("decide", questions={"cars": dn.box(CARS, max=8)}, images=[LOT])
     fresh = Harness(mode, server({}, []))
     fresh.call("decide", questions={"cars": dn.box(CARS, max=8)}, images=[LOT])
-    assert len(sent(h)) == 1 and len(sent(fresh)) == 1
+    assert [b["questions"]["cars"]["max"] for b in sent(h)] == [8]
+    assert len(sent(fresh)) == 1
 
 
 def test_session_open_leaves_places_to_the_server(mode: str) -> None:

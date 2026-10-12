@@ -1,4 +1,7 @@
-# Runs only while the repository is public: nothing is bumped, tagged or published while it is private.
+# Runs only while the repository is public: nothing is bumped, tagged or
+# published while it is private. The one other change from the copied
+# workflow: the built files are checked for names that must not ship before
+# anything is pushed or published.
 #
 # Auto-release bynn-decisionnode on every push to main: bump the patch in
 # pyproject.toml, _version.py and uv.lock, run the tests, build, publish to
@@ -60,6 +63,7 @@ jobs:
       - run: pytest tests --ignore=tests/conformance
 
       - run: python -m build
+      - run: python .github/scripts/check_names.py dist/
 
       - run: |
           git add pyproject.toml src/decisionnode/_version.py uv.lock
