@@ -8,7 +8,7 @@ probability such as ``0.8200000000000001`` stays as it is, and a list may sum to
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Union
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Union
 
 from ._boosters import Evidence, parse_evidence
 
@@ -166,12 +166,106 @@ class BoxAnswer(Answer):
 
 
 @dataclass(frozen=True)
+class PointPlace:
+    """One point of a :class:`PointsAnswer`.
+
+    Attributes:
+        x: The spot's distance from the image's left edge.
+        y: Its distance from the image's top edge, in the question's units.
+        confidence: The probability that this point lies on one of the things asked for.
+    """
+
+    x: Union[int, float]
+    y: Union[int, float]
+    confidence: Union[int, float]
+
+
+@dataclass(frozen=True)
+class BoxPlace:
+    """One box of a :class:`BoxesAnswer`.
+
+    Attributes:
+        x1: The left edge of the box.
+        y1: The top edge.
+        x2: The right edge.
+        y2: The bottom edge, in the question's units.
+        confidence: The probability that this box is right.
+    """
+
+    x1: Union[int, float]
+    y1: Union[int, float]
+    x2: Union[int, float]
+    y2: Union[int, float]
+    confidence: Union[int, float]
+
+
+@dataclass(frozen=True)
+class PointsAnswer(Answer):
+    """The answer to a ``point`` question asked with ``max``: up to ``max`` points.
+
+    Attributes:
+        count: How many points follow, 0 to ``max``.
+        present: The probability that at least one such thing is in the image.
+        complete: The probability that nothing was left out, that the true number is
+            not above ``max``. Low when the picture holds more than you asked for.
+        points: The points, left to right by their centre, ties from the top, each with
+            its own ``confidence``; an empty list at 0.
+        image: The id of the image looked in.
+        width: That image's width in pixels.
+        height: That image's height in pixels.
+    """
+
+    count: int
+    present: Union[int, float]
+    complete: Union[int, float]
+    points: List[PointPlace]
+    image: str
+    width: int
+    height: int
+
+
+@dataclass(frozen=True)
+class BoxesAnswer(Answer):
+    """The answer to a ``box`` question asked with ``max``: up to ``max`` boxes.
+
+    Attributes:
+        count: How many boxes follow, 0 to ``max``.
+        present: The probability that at least one such thing is in the image.
+        complete: The probability that nothing was left out, that the true number is
+            not above ``max``. Low when the picture holds more than you asked for.
+        boxes: The boxes, left to right by their centre, ties from the top, each with its
+            own ``confidence``; an empty list at 0.
+        image: The id of the image looked in.
+        width: That image's width in pixels.
+        height: That image's height in pixels.
+    """
+
+    count: int
+    present: Union[int, float]
+    complete: Union[int, float]
+    boxes: List[BoxPlace]
+    image: str
+    width: int
+    height: int
+
+
+@dataclass(frozen=True)
 class UnknownAnswer(Answer):
     """An answer of a type this version of the SDK does not know, or of a known type whose
     fields are missing or of the wrong type. Read its fields from ``raw``."""
 
 
-AnyAnswer = Union[TruthAnswer, ChoiceAnswer, ScoreAnswer, NumberAnswer, PointAnswer, BoxAnswer, UnknownAnswer]
+AnyAnswer = Union[
+    TruthAnswer,
+    ChoiceAnswer,
+    ScoreAnswer,
+    NumberAnswer,
+    PointAnswer,
+    BoxAnswer,
+    PointsAnswer,
+    BoxesAnswer,
+    UnknownAnswer,
+]
 
 
 @dataclass(frozen=True)
@@ -384,6 +478,26 @@ def _string(raw: Mapping[str, Any], key: str) -> str:
     return value
 
 
+def _places(raw: Mapping[str, Any], key: str, fields: Sequence[str]) -> List[Dict[str, Union[int, float]]]:
+    """The list of a several-places answer: each entry an object of numbers."""
+    value = raw.get(key)
+    if not isinstance(value, list):
+        raise _Malformed(key)
+    out = []
+    for entry in value:
+        if not isinstance(entry, Mapping):
+            raise _Malformed(key)
+        out.append({name: _number(entry, name) for name in fields})
+    return out
+
+
+def _count(raw: Mapping[str, Any], key: str) -> int:
+    value = raw.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise _Malformed(key)
+    return value
+
+
 def _mapping(raw: Mapping[str, Any], key: str) -> Mapping[str, Any]:
     value = raw.get(key)
     if not isinstance(value, Mapping):
@@ -430,6 +544,31 @@ def parse_answer(raw: Any) -> AnyAnswer:
                 expected=_number(raw, "expected"),
                 confidence=_number(raw, "confidence"),
                 probabilities=_number_values(_mapping(raw, "probabilities")),
+            )
+        if kind == "point" and ("points" in raw or "boxes" in raw):
+            # Several places: told by the answer's own list, not by the request.
+            return PointsAnswer(
+                type=kind,
+                raw=raw,
+                count=_count(raw, "count"),
+                present=_number(raw, "present"),
+                complete=_number(raw, "complete"),
+                points=[PointPlace(**p) for p in _places(raw, "points", ("x", "y", "confidence"))],
+                image=_string(raw, "image"),
+                width=_number(raw, "width"),  # type: ignore[arg-type]
+                height=_number(raw, "height"),  # type: ignore[arg-type]
+            )
+        if kind == "box" and ("points" in raw or "boxes" in raw):
+            return BoxesAnswer(
+                type=kind,
+                raw=raw,
+                count=_count(raw, "count"),
+                present=_number(raw, "present"),
+                complete=_number(raw, "complete"),
+                boxes=[BoxPlace(**b) for b in _places(raw, "boxes", ("x1", "y1", "x2", "y2", "confidence"))],
+                image=_string(raw, "image"),
+                width=_number(raw, "width"),  # type: ignore[arg-type]
+                height=_number(raw, "height"),  # type: ignore[arg-type]
             )
         if kind == "point":
             return PointAnswer(

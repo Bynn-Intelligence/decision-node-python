@@ -230,6 +230,14 @@ JSON_TYPES: Dict[str, Callable[[Any], bool]] = {
 
 
 def norm_answer(a: Any) -> Dict[str, Any]:
+    if isinstance(a, dn.PointsAnswer):
+        points = [{"x": p.x, "y": p.y, "confidence": p.confidence} for p in a.points]
+        head = {"kind": "points", "type": a.type, "count": a.count, "present": a.present, "complete": a.complete}
+        return dict(head, points=points, image=a.image, width=a.width, height=a.height)
+    if isinstance(a, dn.BoxesAnswer):
+        boxes = [{"x1": b.x1, "y1": b.y1, "x2": b.x2, "y2": b.y2, "confidence": b.confidence} for b in a.boxes]
+        head = {"kind": "boxes", "type": a.type, "count": a.count, "present": a.present, "complete": a.complete}
+        return dict(head, boxes=boxes, image=a.image, width=a.width, height=a.height)
     if isinstance(a, dn.PointAnswer):
         fields = ("x", "y", "present", "confidence", "image", "width", "height")
         return dict({"kind": "point", "type": a.type}, **{n: getattr(a, n) for n in fields})
@@ -525,9 +533,9 @@ def decode(value: Any, ctx: Dict[str, Any]) -> Any:
             args = {k: decode(v, ctx) for k, v in args.items()}
             return dn.Booster(args["name"], **{k: args[k] for k in ("images", "require", "options") if k in args})
         if key == "$point":
-            return dn.point(args.get("instructions"), args.get("image"), args.get("units"))
+            return dn.point(args.get("instructions"), args.get("image"), args.get("units"), args.get("max"))
         if key == "$box":
-            return dn.box(args.get("instructions"), args.get("image"), args.get("units"))
+            return dn.box(args.get("instructions"), args.get("image"), args.get("units"), args.get("max"))
         if key == "$video":
             args = {k: decode(v, ctx) for k, v in args.items()}
             extra = {k: args[k] for k in ("fps", "start", "end") if k in args}

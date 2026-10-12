@@ -54,6 +54,9 @@ LIST_LIMIT_MAX = 100
 MAX_CUSTOM_ID_CHARS = 512
 DECIDE_TYPES = ("truth", LEGACY_TRUTH, "choice", "score", "number", "point", "box")
 PLACE_TYPES = ("point", "box")
+# Several places (decided 2026-10-12): a point or box question's max, 2 to 16.
+PLACES_MIN, PLACES_MAX = 2, 16
+PLACES_NOT_SUPPORTED = "Several places are not supported by this model version"
 UNITS = ("pixels", "normalized")
 Entry = Tuple[Dict[str, Any], Optional[str]]
 Limits = Mapping[str, Any]
@@ -408,6 +411,16 @@ def _check_place(
         entries.append(
             (_entry("literal_error", loc + ["units"], "Input should be 'pixels' or 'normalized'", units, ctx), None)
         )
+    most = q.get("max")
+    if most is not None:
+        if not _is_int(most):
+            entries.append((_entry("int_type", loc + ["max"], "Input should be a valid integer", most), None))
+        elif most < PLACES_MIN:
+            msg = "Input should be greater than or equal to %d" % PLACES_MIN
+            entries.append((_entry("greater_than_equal", loc + ["max"], msg, most, {"ge": PLACES_MIN}), None))
+        elif most > PLACES_MAX:
+            msg = "Input should be less than or equal to %d" % PLACES_MAX
+            entries.append((_entry("less_than_equal", loc + ["max"], msg, most, {"le": PLACES_MAX}), None))
     if q.get("instructions") is None:
         deferred.append(
             _plain_400(
@@ -538,19 +551,45 @@ def _check_question(
             )
 
 
+def _places_not_supported(body: Mapping[str, Any], held: Limits) -> List[Entry]:
+    """With the model's ``models()`` entry held and no ``places.max_places`` in it (absent
+    or 0), a point or box question with ``max`` is the API's 422 ``not_supported``, one
+    entry per such question. Nothing held: the server's to judge."""
+    if not held:
+        return []
+    places = held.get("places")
+    if isinstance(places, Mapping) and places.get("max_places"):
+        return []
+    questions = body.get("questions")
+    out: List[Entry] = []
+    if isinstance(questions, Mapping):
+        for qid, q in questions.items():
+            if isinstance(q, Mapping) and q.get("type") in PLACE_TYPES and q.get("max") is not None:
+                loc = ["body", "questions", qid, q["type"], "max"]
+                out.append((_entry("not_supported", loc, PLACES_NOT_SUPPORTED, q["max"]), None))
+    return out
+
+
 def check_request(
     body: Mapping[str, Any],
     limits: Optional[Limits] = None,
     extra: Sequence[Entry] = (),
     image_ids: Optional[Sequence[Any]] = None,
     tail: Sequence[Entry] = (),
+    places_held: bool = True,
 ) -> None:
     """Raise what the API would answer for this body's fixed rules, in the API's order:
-    the nesting limit, every 422 entry, then the first 400 in question order.
-    ``image_ids`` are the request's image ids, for the point and box rules; ``tail`` are
-    422 entries listed after the questions' (the image and video counts)."""
+    the nesting limit, the held model's lack of several places, every 422 entry, then the
+    first 400 in question order. ``image_ids`` are the request's image ids, for the point
+    and box rules; ``tail`` are 422 entries listed after the questions' (the image and
+    video counts). ``places_held`` is false for a session's open, whose point and box
+    questions are the server's."""
     check_nesting(body)
     held: Limits = limits or {}
+    if places_held:
+        unsupported = _places_not_supported(body, held)
+        if unsupported:
+            _raise_422(unsupported)
     entries: List[Entry] = list(extra)
     deferred: List[BadRequestError] = []
     state = body.get("state")
@@ -784,7 +823,7 @@ def check_session_open(body: Mapping[str, Any], limits: Optional[Limits] = None)
                     None,
                 )
             )
-    check_request(body, held, entries)
+    check_request(body, held, entries, places_held=False)
     if sessions.get("enabled") is False:
         raise usage_error("Model %s does not serve sessions." % held.get("model"))
 

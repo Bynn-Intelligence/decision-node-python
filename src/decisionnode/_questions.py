@@ -63,21 +63,24 @@ class NumberQuestion(TypedDict):
 
 
 class PointQuestion(TypedDict):
-    """Point to one spot in an image: ``x`` and ``y``."""
+    """Point to one spot in an image: ``x`` and ``y``; with ``max``, up to that many."""
 
     type: Literal["point"]
     instructions: NotRequired[Any]
     image: NotRequired[str]
     units: NotRequired[Literal["pixels", "normalized"]]
+    max: NotRequired[int]
 
 
 class BoxQuestion(TypedDict):
-    """Draw a box around something in an image: ``x1``, ``y1``, ``x2`` and ``y2``."""
+    """Draw a box around something in an image: ``x1``, ``y1``, ``x2`` and ``y2``; with
+    ``max``, around up to that many."""
 
     type: Literal["box"]
     instructions: NotRequired[Any]
     image: NotRequired[str]
     units: NotRequired[Literal["pixels", "normalized"]]
+    max: NotRequired[int]
 
 
 Question = Union[
@@ -191,8 +194,14 @@ def number(
     return question  # type: ignore[return-value]
 
 
-def point(instructions: Any = None, image: Optional[str] = None, units: Optional[str] = None) -> PointQuestion:
-    """A ``point`` question: where in the image is it? Answered with ``x`` and ``y``.
+def point(
+    instructions: Any = None,
+    image: Optional[str] = None,
+    units: Optional[str] = None,
+    max: Optional[int] = None,  # noqa: A002 - the API's name for it
+) -> PointQuestion:
+    """A ``point`` question: where in the image is it? Answered with ``x`` and ``y``, or,
+    with ``max``, with up to ``max`` points (a :class:`PointsAnswer`).
 
     Args:
         instructions: What to find: a phrase, a description with conditions, or a
@@ -202,16 +211,25 @@ def point(instructions: Any = None, image: Optional[str] = None, units: Optional
             instructions.
         units: ``"pixels"`` (the API's default) or ``"normalized"`` (fractions of the
             width and height, from 0 to 1).
+        max: Several places: the most points you can take, from 2 to 16, one per thing
+            the instructions describe ("each person on the platform"). Left out, the
+            one best match.
 
     >>> point("Point to the yellow package closest to the robot arm.")
     {'type': 'point', 'instructions': 'Point to the yellow package closest to the robot arm.'}
     """
-    return _place("point", instructions, image, units)  # type: ignore[return-value]
+    return _place("point", instructions, image, units, max)  # type: ignore[return-value]
 
 
-def box(instructions: Any = None, image: Optional[str] = None, units: Optional[str] = None) -> BoxQuestion:
+def box(
+    instructions: Any = None,
+    image: Optional[str] = None,
+    units: Optional[str] = None,
+    max: Optional[int] = None,  # noqa: A002 - the API's name for it
+) -> BoxQuestion:
     """A ``box`` question: draw a box around it. Answered with the top-left corner
-    (``x1``, ``y1``) and the bottom-right corner (``x2``, ``y2``).
+    (``x1``, ``y1``) and the bottom-right corner (``x2``, ``y2``), or, with ``max``, with
+    up to ``max`` boxes (a :class:`BoxesAnswer`).
 
     Args:
         instructions: What to find. Required by the API.
@@ -219,14 +237,19 @@ def box(instructions: Any = None, image: Optional[str] = None, units: Optional[s
             has two or more images. A reference by number ("Picture 2") goes in the
             instructions.
         units: ``"pixels"`` (the API's default) or ``"normalized"``.
+        max: Several places: the most boxes you can take, from 2 to 16, one per thing
+            the instructions describe ("every car in the lot"). Left out, the one best
+            match.
 
     >>> box("Draw a box around the damaged package.", image="belt")
     {'type': 'box', 'instructions': 'Draw a box around the damaged package.', 'image': 'belt'}
     """
-    return _place("box", instructions, image, units)  # type: ignore[return-value]
+    return _place("box", instructions, image, units, max)  # type: ignore[return-value]
 
 
-def _place(kind: str, instructions: Any, image: Optional[str], units: Optional[str]) -> Dict[str, Any]:
+def _place(
+    kind: str, instructions: Any, image: Optional[str], units: Optional[str], most: Optional[int] = None
+) -> Dict[str, Any]:
     question: Dict[str, Any] = {"type": kind}
     if instructions is not None:
         question["instructions"] = instructions
@@ -234,4 +257,6 @@ def _place(kind: str, instructions: Any, image: Optional[str], units: Optional[s
         question["image"] = image
     if units is not None:
         question["units"] = units
+    if most is not None:
+        question["max"] = most
     return question
