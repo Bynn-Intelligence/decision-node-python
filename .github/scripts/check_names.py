@@ -4,8 +4,9 @@ Usage: python3 check_names.py <file or directory>...
 
 Reads every file given, every file under a directory, and every member of an archive
 (.whl, .zip, .tar, .tar.gz, .tgz, .gem, nested archives and .gz members included), and
-fails when one holds an internal reference or a word that must not ship. On a hit it
-prints the file and line, never the word.
+fails when one holds an internal reference or a word that must not ship, or when a
+README or the package's description names a booster production does not serve yet. On
+a hit it prints the file and line, never the word.
 """
 
 from __future__ import annotations
@@ -36,6 +37,11 @@ INSIDE_WORDS = {
 INSIDE_LENGTHS = (6, 7)
 WHOLE_WORDS = {"2e0b8d61fa2a6959d254b6ff5d0fb512249329097336a35568089933b49abdde"}
 ARCHIVE = re.compile(r"\.(whl|zip|tar|tar\.gz|tgz|gem)$")
+# Boosters a README may name only once production serves them, and the files that carry
+# a README or the package's description: a README itself, a wheel's METADATA or an sdist's
+# PKG-INFO, an npm package.json, a gem's metadata.
+UNSERVED = re.compile(r"face_detection|wanted_person|face_recognition")
+DESCRIBES = re.compile(r"(^|/)(README[^/]*|PKG-INFO|METADATA|package\.json|metadata)$", re.IGNORECASE)
 
 
 def digest(text: str) -> str:
@@ -71,6 +77,9 @@ def scan(name: str, data: bytes) -> List[str]:
 
     for m in FORBIDDEN.finditer(text):
         found(m.start(), repr(m.group(0)))
+    if DESCRIBES.search(name.split("!")[-1]):
+        for m in UNSERVED.finditer(text):
+            found(m.start(), "%r, a booster production does not serve yet" % m.group(0))
     lower = text.lower()
     for m in re.finditer(r"[a-z]{%d,}" % min(INSIDE_LENGTHS), lower):
         run = m.group(0)
