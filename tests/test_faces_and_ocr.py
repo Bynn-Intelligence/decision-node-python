@@ -1,4 +1,4 @@
-"""The face_detection and wanted_person readings, and the ocr timeout rule, for both the
+"""The face_detection and face_recognition readings, and the ocr timeout rule, for both the
 sync and the async client."""
 
 from __future__ import annotations
@@ -94,17 +94,25 @@ def test_face_detection_reading() -> None:
     assert type(none) is dn.FaceDetectionReading and none.detections == []
 
 
-def test_wanted_person_reading() -> None:
-    (reading,) = readings(
-        "wanted_person",
-        [{"image": "gate", "faces": 3, "matches": [{"box": BOX, "score": 0.91, "reference": "ref_7Q2"}]}],
-    )
-    assert type(reading) is dn.WantedPersonReading and (reading.image, reading.faces) == ("gate", 3)
+def test_face_recognition_reading() -> None:
+    match = {"box": BOX, "score": 0.91, "collection": "celebrities", "reference": "celeb-00412", "name": "A Name"}
+    own = {"box": BOX, "score": 0.81, "collection": "col_1", "reference": "emp-1042", "label": "Reception"}
+    bare = {"box": BOX, "score": 0.7, "collection": "col_1", "reference": "emp-0977"}
+    (reading,) = readings("face_recognition", [{"image": "gate", "faces": 3, "matches": [match, own, bare]}])
+    assert type(reading) is dn.FaceRecognitionReading and (reading.image, reading.faces) == ("gate", 3)
+    box = dn.FaceBox(x1=120, y1=64, x2=312, y2=290)
     assert reading.matches == [
-        dn.WantedMatch(box=dn.FaceBox(x1=120, y1=64, x2=312, y2=290), score=0.91, reference="ref_7Q2")
+        dn.FaceMatch(box=box, score=0.91, collection="celebrities", reference="celeb-00412", name="A Name"),
+        dn.FaceMatch(box=box, score=0.81, collection="col_1", reference="emp-1042", label="Reception"),
+        dn.FaceMatch(box=box, score=0.7, collection="col_1", reference="emp-0977"),
     ]
-    empty = readings("wanted_person", [{"image": "gate", "faces": 1, "matches": []}])[0]
-    assert type(empty) is dn.WantedPersonReading and empty.matches == []
+    # name and label are empty when absent.
+    assert (reading.matches[2].name, reading.matches[2].label) == (None, None)
+    empty = readings("face_recognition", [{"image": "gate", "faces": 1, "matches": []}])[0]
+    assert type(empty) is dn.FaceRecognitionReading and empty.matches == []
+    # wanted_person is no longer a booster this client knows: its reading is generic.
+    (old,) = readings("wanted_person", [{"image": "gate", "faces": 1, "matches": []}])
+    assert type(old) is dn.UnknownReading
 
 
 @pytest.mark.parametrize(
@@ -132,22 +140,39 @@ def test_malformed_face_detection_is_generic(raw: Dict[str, Any]) -> None:
     "raw",
     [
         {"image": "a", "faces": 1},
+        {"image": "a", "matches": []},
         {"image": "a", "faces": "1", "matches": []},
-        {"image": "a", "faces": 1, "matches": [{"box": BOX, "score": 0.9}]},
-        {"image": "a", "faces": 1, "matches": [{"box": BOX, "score": 0.9, "reference": 7}]},
-        {"image": "a", "faces": 1, "matches": [{"box": BOX, "score": None, "reference": "r"}]},
-        {"image": "a", "faces": 1, "matches": [{"score": 0.9, "reference": "r"}]},
+        {"image": "a", "faces": 1, "matches": [{"box": BOX, "score": 0.9, "collection": "c"}]},
+        {"image": "a", "faces": 1, "matches": [{"box": BOX, "score": 0.9, "collection": "c", "reference": 7}]},
+        {"image": "a", "faces": 1, "matches": [{"box": BOX, "score": 0.9, "reference": "r"}]},
+        {"image": "a", "faces": 1, "matches": [{"box": BOX, "score": 0.9, "collection": 3, "reference": "r"}]},
+        {"image": "a", "faces": 1, "matches": [{"box": BOX, "score": None, "collection": "c", "reference": "r"}]},
+        {"image": "a", "faces": 1, "matches": [{"score": 0.9, "collection": "c", "reference": "r"}]},
+        {
+            "image": "a",
+            "faces": 1,
+            "matches": [{"box": BOX, "score": 0.9, "collection": "c", "reference": "r", "name": 1}],
+        },
+        {
+            "image": "a",
+            "faces": 1,
+            "matches": [{"box": BOX, "score": 0.9, "collection": "c", "reference": "r", "label": 2}],
+        },
     ],
 )
-def test_malformed_wanted_person_is_generic(raw: Dict[str, Any]) -> None:
-    (reading,) = readings("wanted_person", [raw])
+def test_malformed_face_recognition_is_generic(raw: Dict[str, Any]) -> None:
+    (reading,) = readings("face_recognition", [raw])
     assert type(reading) is dn.UnknownReading and reading.raw == raw
 
 
-def test_threshold_sent_as_given(mode: str) -> None:
+def test_face_recognition_options_sent_as_given(mode: str) -> None:
     rec = Recorder(ok())
-    Harness(mode, rec).call("decide", "s", Q, boosters=[dn.Booster("wanted_person", options={"threshold": 0.8})])
-    assert rec.body()["boosters"] == [{"name": "wanted_person", "options": {"threshold": 0.8}}]
+    options = {"collection": "celebrities", "threshold": 0.8}
+    Harness(mode, rec).call("decide", "s", Q, boosters=[dn.Booster("face_recognition", options=options)])
+    assert rec.body()["boosters"] == [{"name": "face_recognition", "options": options}]
+    # Nothing about the options is checked locally: a threshold out of range is sent too.
+    Harness(mode, rec).call("decide", "s", Q, boosters=[dn.Booster("face_recognition", options={"threshold": 7})])
+    assert rec.body()["boosters"] == [{"name": "face_recognition", "options": {"threshold": 7}}]
 
 
 # --------------------------------------------------------------------------- the ocr timeout

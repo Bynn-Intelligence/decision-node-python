@@ -308,12 +308,22 @@ def norm_reading(r: Any) -> Dict[str, Any]:
             "faces": r.faces,
             "detections": [{"box": norm_box(d.box), "confidence": d.confidence} for d in r.detections],
         }
-    if isinstance(r, dn.WantedPersonReading):
+    if isinstance(r, dn.FaceRecognitionReading):
         return {
-            "kind": "wanted_person",
+            "kind": "face_recognition",
             "image": r.image,
             "faces": r.faces,
-            "matches": [{"box": norm_box(m.box), "score": m.score, "reference": m.reference} for m in r.matches],
+            "matches": [
+                {
+                    "box": norm_box(m.box),
+                    "score": m.score,
+                    "collection": m.collection,
+                    "reference": m.reference,
+                    "name": m.name,
+                    "label": m.label,
+                }
+                for m in r.matches
+            ],
         }
     if not isinstance(r, dn.UnknownReading):
         raise Fail("reading of class %s is none of the reading types" % type(r).__name__)
@@ -617,6 +627,8 @@ async def invoke(client: Any, mode: str, call: Dict[str, Any], ctx: Dict[str, An
         result = client.check_request(method, **a)
         assert not inspect.isawaitable(result), "check_request must not be a coroutine"
         return result
+    if method.startswith("collections."):
+        return await settle(getattr(client.collections, method.split(".", 1)[1])(**a))
     if method.startswith("batches."):
         result = await settle(getattr(client.batches, method.split(".", 1)[1])(**a))
         if method == "batches.results":
@@ -703,6 +715,22 @@ async def close_client(client: Any) -> None:
 # --------------------------------------------------------------------------- outcomes
 
 
+# The collections calls' results, each the API's object as sent; collections is the list.
+COLLECTION_KINDS = ("collection", "collections", "item", "item_page", "deleted")
+
+
+def check_collection_result(kind: str, expected: Any, result: Any, path: str) -> None:
+    if kind == "collections":
+        if not isinstance(result, list):
+            raise Fail("%s: expected a list of collections, got %s" % (path, type(result).__name__))
+        if len(expected) != len(result):
+            raise Fail("%s: expected %d collections, got %d" % (path, len(expected), len(result)))
+        for i, (e, r) in enumerate(zip(expected, result)):
+            match(e, r, "%s[%d]" % (path, i))
+        return
+    match(expected, result, path)
+
+
 def check_outcome(spec: Dict[str, Any], result: Any, path: str) -> None:
     if spec.get("argument_error"):
         if not isinstance(result, ValueError) or isinstance(result, dn.DecisionNodeError):
@@ -740,6 +768,8 @@ def check_outcome(spec: Dict[str, Any], result: Any, path: str) -> None:
             raise Fail("%s: expected a BatchRun, got %r" % (path, result))
         match(spec.get("batch", {}), result.batch.raw, path + ".batch")
         check_results_spec(spec, result.results, path)
+    elif kind in COLLECTION_KINDS:
+        check_collection_result(kind, spec.get(kind, {}), result, path + "." + kind)
     elif kind == "checked":
         if result is not None:
             raise Fail("%s: check returned %r; a request that passes every check returns nothing" % (path, result))
@@ -1026,6 +1056,9 @@ async def run_response(case: Dict[str, Any], mock: Mock, mode: str, env: pytest.
     elif "upload_ids" in exp:
         if not same(exp["upload_ids"], list(result)):
             raise Fail("upload_ids: expected %s, got %s" % (exp["upload_ids"], result))
+    elif any(k in exp for k in COLLECTION_KINDS):
+        kind = next(k for k in COLLECTION_KINDS if k in exp)
+        check_collection_result(kind, exp[kind], result, kind)
     else:
         raise Fail("no expectation this harness knows: %s" % list(exp))
 

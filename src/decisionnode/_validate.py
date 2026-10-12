@@ -12,6 +12,7 @@ import decimal
 import ipaddress
 import json
 import math
+import re
 from decimal import Decimal
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 from urllib.parse import urlsplit
@@ -56,6 +57,12 @@ DECIDE_TYPES = ("truth", LEGACY_TRUTH, "choice", "score", "number", "point", "bo
 PLACE_TYPES = ("point", "box")
 # Several places (decided 2026-10-12): a point or box question's max, 2 to 16.
 PLACES_MIN, PLACES_MAX = 2, 16
+# Collections (decided 2026-10-12): a collection's name, and an item's reference and label.
+COLLECTION_TYPES = ("face",)
+COLLECTION_NAME_MAX = 80
+ITEM_REFERENCE_MAX = 64
+ITEM_REFERENCE_PATTERN = "^[A-Za-z0-9_.:-]+$"
+ITEM_LABEL_MAX = 128
 UNITS = ("pixels", "normalized")
 Entry = Tuple[Dict[str, Any], Optional[str]]
 Limits = Mapping[str, Any]
@@ -857,6 +864,50 @@ def check_lines(requests: Sequence[Any], allow_empty: bool, limits: Optional[Lim
                 shown = shown[:64] + "..."
             raise usage_error("Line %d: custom_id %s is already in the batch." % (n, shown))
         seen.add(cid)
+
+
+def _string_entries(loc: List[Any], value: Any, least: int, most: int, pattern: Optional[str] = None) -> List[Entry]:
+    """A string field's 422 entry, as the API answers it: missing, not a string, too
+    short, too long, or not matching ``pattern``."""
+    if value is None:
+        return [(_entry("missing", loc, "Field required", None), None)] if least else []
+    if not isinstance(value, str):
+        return [(_entry("string_type", loc, "Input should be a valid string", value), None)]
+    if len(value) < least:
+        msg = "String should have at least %d character%s" % (least, "" if least == 1 else "s")
+        return [(_entry("string_too_short", loc, msg, value, {"min_length": least}), None)]
+    if len(value) > most:
+        msg = "String should have at most %d characters" % most
+        return [(_entry("string_too_long", loc, msg, value, {"max_length": most}), None)]
+    if pattern is not None and not re.fullmatch(pattern, value):
+        msg = "String should match pattern '%s'" % pattern
+        return [(_entry("string_pattern_mismatch", loc, msg, value, {"pattern": pattern}), None)]
+    return []
+
+
+def check_collection(kind: Any, name: Any) -> None:
+    """A new collection's type and name, as the API checks them."""
+    entries: List[Entry] = []
+    if kind not in COLLECTION_TYPES:
+        entries.append(
+            (_entry("literal_error", ["body", "type"], "Input should be 'face'", kind, {"expected": "'face'"}), None)
+        )
+    entries.extend(_string_entries(["body", "name"], name, 1, COLLECTION_NAME_MAX))
+    if entries:
+        _raise_422(entries)
+
+
+def check_item(image: Any, reference: Any, label: Any) -> None:
+    """An enrollment's fields, as the API checks them; the image is then checked as a
+    decision's image."""
+    entries: List[Entry] = []
+    if image is None:
+        entries.append((_entry("missing", ["body", "image"], "Field required", {"reference": reference}), None))
+    entries.extend(_string_entries(["body", "reference"], reference, 1, ITEM_REFERENCE_MAX, ITEM_REFERENCE_PATTERN))
+    if label is not None:
+        entries.extend(_string_entries(["body", "label"], label, 0, ITEM_LABEL_MAX))
+    if entries:
+        _raise_422(entries)
 
 
 def check_list_query(offset: Any, limit: Any) -> None:

@@ -22,8 +22,8 @@ __all__ = [
     "FaceBox",
     "FaceDetection",
     "FaceDetectionReading",
-    "WantedMatch",
-    "WantedPersonReading",
+    "FaceMatch",
+    "FaceRecognitionReading",
     "TopGenerator",
     "UnknownReading",
     "AnyReading",
@@ -246,36 +246,43 @@ class FaceDetectionReading(Reading):
 
 
 @dataclass(frozen=True)
-class WantedMatch:
-    """A face that a ``wanted_person`` reading matched to an entry of the list.
+class FaceMatch:
+    """A face that a ``face_recognition`` reading matched to an item of a collection.
 
     Attributes:
         box: Where the face is.
         score: How well it matches, from 0 to 1.
-        reference: The id of the list entry it matches; never a name or any other
-            personal detail.
+        collection: The collection searched, as the request named it.
+        reference: The matched item's reference.
+        name: The name of a public figure, for a match in a public collection that has
+            one; ``None`` otherwise.
+        label: The item's label, for an item of your own collection that has one;
+            ``None`` otherwise.
     """
 
     box: FaceBox
     score: Union[int, float]
+    collection: str
     reference: str
+    name: Optional[str] = None
+    label: Optional[str] = None
 
 
 @dataclass(frozen=True)
-class WantedPersonReading(Reading):
-    """A reading of the ``wanted_person`` booster: the faces checked against the list.
+class FaceRecognitionReading(Reading):
+    """A reading of the ``face_recognition`` booster: the faces searched in a collection.
 
     Attributes:
-        faces: How many faces were checked.
-        matches: The faces that match an entry, empty when none does.
+        faces: How many faces were searched.
+        matches: The faces that match an item, by score; empty when none does.
     """
 
     faces: int
-    matches: List[WantedMatch]
+    matches: List[FaceMatch]
 
 
 AnyReading = Union[
-    AgeReading, AiGeneratedReading, OcrReading, FaceDetectionReading, WantedPersonReading, UnknownReading
+    AgeReading, AiGeneratedReading, OcrReading, FaceDetectionReading, FaceRecognitionReading, UnknownReading
 ]
 
 
@@ -424,15 +431,30 @@ def _face_detection(raw: Dict[str, Any]) -> FaceDetectionReading:
     )
 
 
-def _wanted_person(raw: Dict[str, Any]) -> WantedPersonReading:
-    return WantedPersonReading(
+def _optional_string(raw: Mapping[str, Any], key: str) -> Optional[str]:
+    value = raw.get(key)
+    if value is not None and not isinstance(value, str):
+        raise _Malformed(key)
+    return value
+
+
+def _face_match(e: Mapping[str, Any]) -> FaceMatch:
+    return FaceMatch(
+        box=_box(e),
+        score=_number(e, "score"),
+        collection=_string(e, "collection"),
+        reference=_string(e, "reference"),
+        name=_optional_string(e, "name"),
+        label=_optional_string(e, "label"),
+    )
+
+
+def _face_recognition(raw: Dict[str, Any]) -> FaceRecognitionReading:
+    return FaceRecognitionReading(
         image=_string(raw, "image"),
         raw=raw,
         faces=_faces(raw),
-        matches=[
-            WantedMatch(box=_box(e), score=_number(e, "score"), reference=_string(e, "reference"))
-            for e in _entries(raw, "matches")
-        ],
+        matches=[_face_match(e) for e in _entries(raw, "matches")],
     )
 
 
@@ -441,7 +463,7 @@ _READERS: Dict[str, Callable[[Dict[str, Any]], AnyReading]] = {
     "ai_generated": _ai_generated,
     "ocr": _ocr,
     "face_detection": _face_detection,
-    "wanted_person": _wanted_person,
+    "face_recognition": _face_recognition,
 }
 
 

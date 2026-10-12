@@ -24,6 +24,7 @@ from typing import (
     Type,
     TypeVar,
     Union,
+    cast,
 )
 from urllib.parse import quote, urlencode, urlsplit
 
@@ -90,8 +91,10 @@ from ._uploads import (
 from ._validate import (
     MAX_UPLOAD_FILES,
     check_body_size,
+    check_collection,
     check_frame,
     check_images,
+    check_item,
     check_lines,
     check_list_query,
     check_request,
@@ -278,6 +281,26 @@ def _batch_path(batch_id: Any, suffix: str = "") -> str:
     if not isinstance(batch_id, str) or not batch_id:
         raise ValueError("batch_id must be a batch id such as batch_01J9ZB8Q3T, got %r" % (batch_id,))
     return "%s/%s%s" % (_base.BATCHES_PATH, quote(batch_id, safe=""), suffix)
+
+
+def _collection_path(collection_id: Any, suffix: str = "") -> str:
+    if not isinstance(collection_id, str) or not collection_id:
+        raise ValueError(
+            "collection_id must be a collection id such as col_... or a public collection's name, got %r"
+            % (collection_id,)
+        )
+    return "%s/%s%s" % (_base.COLLECTIONS_PATH, quote(collection_id, safe=""), suffix)
+
+
+def _item_path(collection_id: Any, item_id: Any) -> str:
+    if not isinstance(item_id, str) or not item_id:
+        raise ValueError("item_id must be an item id such as itm_..., got %r" % (item_id,))
+    return _collection_path(collection_id, "/items/%s" % quote(item_id, safe=""))
+
+
+def _collection_list(body: Any) -> List[Dict[str, Any]]:
+    found = body.get("collections") if isinstance(body, Mapping) else None
+    return list(found) if isinstance(found, list) else []
 
 
 def _list_query(offset: Any, limit: Any) -> Dict[str, int]:
@@ -795,6 +818,7 @@ class DecisionNode(_Common):
         self._clock = time.time
         self._held = {}
         self.batches = Batches(self)
+        self.collections = Collections(self)
 
     # ---- lifecycle
 
@@ -1447,6 +1471,70 @@ class Batches:
         return parse_batch(body)
 
 
+class Collections:
+    """Collections of faces, as ``dn.collections``: a workspace's own, and the public
+    ones it may search. Every call returns the API's object as sent.
+
+    ``create`` and ``enroll`` are retried only on 429 and 529, never after a timeout, a
+    lost answer or a 5xx: a repeat could enroll the face, and bill it, twice.
+    """
+
+    def __init__(self, client: DecisionNode) -> None:
+        self._client = client
+
+    def create(self, name: str, type: str = "face") -> Dict[str, Any]:  # noqa: A002 - the API's field
+        """Create a collection of the workspace."""
+        check_collection(type, name)
+        content = _base.encode({"type": type, "name": name})
+        _, _, body = self._client._json("POST", _base.COLLECTIONS_PATH, content, MUTATION)
+        return cast(Dict[str, Any], body)
+
+    def list(self) -> List[Dict[str, Any]]:
+        """The workspace's own collections, newest first, then the public ones it may use."""
+        _, _, body = self._client._json("GET", _base.COLLECTIONS_PATH, None)
+        return _collection_list(body)
+
+    def get(self, collection_id: str) -> Dict[str, Any]:
+        """One collection, by its id or a public collection's name."""
+        _, _, body = self._client._json("GET", _collection_path(collection_id), None)
+        return cast(Dict[str, Any], body)
+
+    def delete(self, collection_id: str) -> Dict[str, Any]:
+        """Delete a collection and every item in it."""
+        _, _, body = self._client._json("DELETE", _collection_path(collection_id), None)
+        return cast(Dict[str, Any], body)
+
+    def enroll(
+        self, collection_id: str, image: ImageInput, reference: str, label: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Enroll the face in ``image`` (the largest, when it shows several), sent as a
+        decision's image is: a URL as given, local bytes inline or uploaded."""
+        path = _collection_path(collection_id, "/items")
+        check_item(image, reference, label)
+        client = self._client
+        imgs = _base.image_list(image)
+        check_images(imgs, client._limits())
+        wires = client._finish(client._plan(imgs))
+        item: Dict[str, Any] = {"image": wires[0], "reference": reference}
+        if label is not None:
+            item["label"] = label
+        _, _, body = client._json("POST", path, _base.encode(item), MUTATION)
+        return cast(Dict[str, Any], body)
+
+    def list_items(
+        self, collection_id: str, offset: Optional[int] = None, limit: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """One page of a collection's items, newest first."""
+        path = _collection_path(collection_id, "/items")
+        _, _, body = self._client._json("GET", path, None, query=_list_query(offset, limit))
+        return cast(Dict[str, Any], body)
+
+    def delete_item(self, collection_id: str, item_id: str) -> Dict[str, Any]:
+        """Delete one item of a collection."""
+        _, _, body = self._client._json("DELETE", _item_path(collection_id, item_id), None)
+        return cast(Dict[str, Any], body)
+
+
 class AsyncDecisionNode(_Common):
     """The DecisionNode client for asyncio. Same arguments and methods as :class:`DecisionNode`;
     every method is a coroutine.
@@ -1493,6 +1581,7 @@ class AsyncDecisionNode(_Common):
         self._clock = time.time
         self._held = {}
         self.batches = AsyncBatches(self)
+        self.collections = AsyncCollections(self)
 
     # ---- lifecycle
 
@@ -2090,3 +2179,63 @@ class AsyncBatches:
         """Cancel a batch."""
         _, _, body = await self._client._json("POST", _batch_path(batch_id, "/cancel"), None)
         return parse_batch(body)
+
+
+class AsyncCollections:
+    """Collections of faces, as ``dn.collections`` on the async client. Every call
+    returns the API's object as sent; ``create`` and ``enroll`` are retried only on 429
+    and 529."""
+
+    def __init__(self, client: AsyncDecisionNode) -> None:
+        self._client = client
+
+    async def create(self, name: str, type: str = "face") -> Dict[str, Any]:  # noqa: A002 - the API's field
+        """Create a collection of the workspace."""
+        check_collection(type, name)
+        content = _base.encode({"type": type, "name": name})
+        _, _, body = await self._client._json("POST", _base.COLLECTIONS_PATH, content, MUTATION)
+        return cast(Dict[str, Any], body)
+
+    async def list(self) -> List[Dict[str, Any]]:
+        """The workspace's own collections, newest first, then the public ones it may use."""
+        _, _, body = await self._client._json("GET", _base.COLLECTIONS_PATH, None)
+        return _collection_list(body)
+
+    async def get(self, collection_id: str) -> Dict[str, Any]:
+        """One collection, by its id or a public collection's name."""
+        _, _, body = await self._client._json("GET", _collection_path(collection_id), None)
+        return cast(Dict[str, Any], body)
+
+    async def delete(self, collection_id: str) -> Dict[str, Any]:
+        """Delete a collection and every item in it."""
+        _, _, body = await self._client._json("DELETE", _collection_path(collection_id), None)
+        return cast(Dict[str, Any], body)
+
+    async def enroll(
+        self, collection_id: str, image: ImageInput, reference: str, label: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Enroll the face in ``image``, sent as a decision's image is."""
+        path = _collection_path(collection_id, "/items")
+        check_item(image, reference, label)
+        client = self._client
+        imgs = _base.image_list(image)
+        check_images(imgs, client._limits())
+        wires = await client._finish(client._plan(imgs))
+        item: Dict[str, Any] = {"image": wires[0], "reference": reference}
+        if label is not None:
+            item["label"] = label
+        _, _, body = await client._json("POST", path, _base.encode(item), MUTATION)
+        return cast(Dict[str, Any], body)
+
+    async def list_items(
+        self, collection_id: str, offset: Optional[int] = None, limit: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """One page of a collection's items, newest first."""
+        path = _collection_path(collection_id, "/items")
+        _, _, body = await self._client._json("GET", path, None, query=_list_query(offset, limit))
+        return cast(Dict[str, Any], body)
+
+    async def delete_item(self, collection_id: str, item_id: str) -> Dict[str, Any]:
+        """Delete one item of a collection."""
+        _, _, body = await self._client._json("DELETE", _item_path(collection_id, item_id), None)
+        return cast(Dict[str, Any], body)

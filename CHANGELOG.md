@@ -29,11 +29,17 @@ Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`).
   booster this version does not know or with a field missing or of the wrong type. `None`
   when the request named no boosters.
 - `Decision.usage.booster_tokens` and `Decision.usage.boosters` (`None` when absent).
-- The readings of the `ocr`, `face_detection` and `wanted_person` boosters: `OcrReading`
+- The readings of the `ocr`, `face_detection` and `face_recognition` boosters: `OcrReading`
   (`text`, `truncated`), `FaceDetectionReading` (`faces`, `detections` of `FaceDetection`
-  with a `FaceBox` and a `confidence`) and `WantedPersonReading` (`faces`, `matches` of
-  `WantedMatch` with a `FaceBox`, a `score` and a `reference`). Box corners are kept as
+  with a `FaceBox` and a `confidence`) and `FaceRecognitionReading` (`faces`, `matches` of
+  `FaceMatch` with a `FaceBox`, a `score`, the `collection` searched, the item's
+  `reference`, and `name` or `label`, `None` when absent). Box corners are kept as
   received. A malformed reading is an `UnknownReading`.
+- Collections of faces, as `dn.collections`: `create`, `list`, `get`, `delete`, `enroll`
+  (one face from one image, sent as a decision's image is), `list_items` and
+  `delete_item`, each returning the API's object as sent. `create` and `enroll` are
+  retried only on 429 and 529. A collection's type and name, an item's reference and
+  label and the items list's `offset` and `limit` are checked before anything is sent.
 - A decision whose boosters name `ocr` waits 30 seconds per attempt unless a `timeout` was
   set on the client, and is never retried after a timeout, since the server finishes that
   attempt and may bill it; its other retries stay.

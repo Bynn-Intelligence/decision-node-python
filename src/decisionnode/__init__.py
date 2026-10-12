@@ -28,12 +28,12 @@ from ._boosters import (
     FaceBox,
     FaceDetection,
     FaceDetectionReading,
+    FaceMatch,
+    FaceRecognitionReading,
     OcrReading,
     Reading,
     TopGenerator,
     UnknownReading,
-    WantedMatch,
-    WantedPersonReading,
 )
 from ._client import AsyncBatches, AsyncDecisionNode, Batches, BatchRequest, DecideRequest, DecisionNode, DecisionResult
 from ._errors import (
@@ -153,8 +153,8 @@ __all__ = [
     "FaceBox",
     "FaceDetection",
     "FaceDetectionReading",
-    "WantedMatch",
-    "WantedPersonReading",
+    "FaceMatch",
+    "FaceRecognitionReading",
     "TopGenerator",
     "UnknownReading",
     "BoosterStatus",

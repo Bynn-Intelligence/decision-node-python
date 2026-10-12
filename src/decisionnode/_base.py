@@ -64,6 +64,7 @@ MODELS_PATH = "/v1/models"
 UPLOADS_PATH = "/v1/uploads"
 SESSIONS_PATH = "/v1/sessions"
 BATCHES_PATH = "/v1/batches"
+COLLECTIONS_PATH = "/v1/collections"
 
 # Retry policies. DEFAULT: 408, 429, 5xx, timeouts and dropped connections. MUTATION
 # (batch create, add and finalize): only 429 and 529, which the API answers before
