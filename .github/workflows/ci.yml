@@ -21,7 +21,7 @@ permissions:
 env:
   # The conformance suite commit this SDK is tested against (suite 1.13, for specification
   # 1.3). Change it here only.
-  CONFORMANCE_REF: b181c624d7a4efd1d963a4b16088f09a0514372f
+  CONFORMANCE_REF: 5f996eabc796c15d97655169dff7c8082e8a5d48
   UV_VERSION: "0.7.13"
 
 concurrency:
