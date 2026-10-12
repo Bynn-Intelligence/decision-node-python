@@ -68,8 +68,8 @@ Six question types. Each builder returns the question in its wire form, and a pl
 | `choice(instructions, options)` | Which one? `options` is a dict of name to description, or a list of names | `ChoiceAnswer.choice`, `.confidence`, `.probabilities` (by option name) |
 | `score(instructions, levels)` | Where on this scale? `levels` are ordered low to high | `ScoreAnswer.score` (expected level index), `.confidence`, `.probabilities` and `.legend` (by level index, as `int`) |
 | `number(instructions, min, max, step)` | Which number? A value of the grid `min`, `min + step`, ... up to `max` (defaults 0, 255 and 1) | `NumberAnswer.number` (the most likely value), `.expected` (the weighted mean), `.confidence`, `.probabilities` (by the value as the API writes it: `"7"`, `"3.5"`) |
-| `point(instructions, image=None, units=None, max=None)` | Where in the image? (below) | `PointAnswer.x`, `.y`, `.present`, `.confidence`, `.image`, `.width`, `.height`; with `max`, a `PointsAnswer` |
-| `box(instructions, image=None, units=None, max=None)` | Draw a box around it (below) | `BoxAnswer.x1`, `.y1`, `.x2`, `.y2`, `.present`, `.confidence`, `.image`, `.width`, `.height`; with `max`, a `BoxesAnswer` |
+| `point(instructions, image=None, units=None)` | Where in the image? (below) | `PointAnswer.x`, `.y`, `.present`, `.confidence`, `.image`, `.width`, `.height` |
+| `box(instructions, image=None, units=None)` | Draw a box around it (below) | `BoxAnswer.x1`, `.y1`, `.x2`, `.y2`, `.present`, `.confidence`, `.image`, `.width`, `.height` |
 
 `state`, `instructions`, option descriptions and levels take a string or any
 JSON-serialisable value. Question ids are any string and come back unchanged; read
@@ -301,41 +301,7 @@ else:
 | `image`, `width`, `height` | The image the answer refers to and its size in pixels, so you can draw or convert the answer without another lookup |
 
 Every field is always there. When several things match, the answer is the best match;
-say which one you mean in the instructions ("the leftmost yellow package"), or ask for
-several places.
-
-### Several places
-
-With `max`, a point or box question answers up to `max` places, one per thing the
-instructions describe: every car in the lot, each person on the platform.
-
-```python
-d = dn.decide(
-    images=[Image("lot", url="https://files.example.com/lot/0001.jpg")],
-    questions={
-        "cars": box("Every car in the lot.", max=8),
-        "people": point("Each person standing on the platform.", max=6),
-    },
-)
-
-cars = d["cars"]  # a BoxesAnswer
-cars.count  # 5
-for b in cars.boxes:
-    draw(b.x1, b.y1, b.x2, b.y2, b.confidence)
-if cars.complete < 0.5:
-    ...  # more cars than 8 may be in the picture: raise max or narrow the instructions
-```
-
-| Field | |
-|---|---|
-| `count` | How many places follow, 0 to `max` |
-| `present` | The probability that at least one such thing is in the image |
-| `complete` | The probability that nothing was left out: that the true number is not above `max`. Low when the picture holds more than you asked for |
-| `points` or `boxes` | The places (`PointPlace` with `x`, `y`, `confidence`; `BoxPlace` with `x1`, `y1`, `x2`, `y2`, `confidence`), left to right by the centre, ties from the top; an empty list when none is found |
-| `image`, `width`, `height` | As for one place |
-
-`max` is a whole number from 2 to 16, checked before anything is sent. `decide`,
-`decide_many` and batch requests take `max`.
+say which one you mean in the instructions ("the leftmost yellow package").
 
 A point or box question needs an image in the request. With two or more images, name the
 one to look in with `image`, the image's id; a reference by number ("Picture 2") goes in
@@ -926,7 +892,7 @@ The tests include the DecisionNode SDK conformance suite
 (`Bynn-Intelligence/decision-node-conformance`), run with both the sync and the async
 client. Set `DECISIONNODE_CONFORMANCE_DIR` to a checkout of it, or check it out at
 `conformance/` in this repository; without it the conformance tests fail rather than
-skip. The tests pass suite 1.12; CI checks the suite out at the commit pinned in
+skip. The tests pass suite 1.11; CI checks the suite out at the commit pinned in
 `CONFORMANCE_REF` in `.github/workflows/ci.yml`, with every action pinned to a commit SHA
 and no checkout keeping its credentials.
 
