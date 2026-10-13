@@ -643,11 +643,45 @@ name, so you can log which version answered.
 `status` (`deployed`, which answers decisions, or `ready`: trained and not deployed). On
 the catalogue's own entries these four are `None`.
 
+## Collections
+
+A collection holds faces your workspace enrolls, each with your own `reference`, an
+optional `label` and `metadata`, so a `face_recognition` booster can find them in the
+pictures of a decision. Every call returns the API's object as sent.
+
+```python
+col = dn.collections.create("Staff")
+item = dn.collections.enroll(
+    col["id"],
+    Image("badge", url="https://files.example.com/staff/1042.jpg"),
+    reference="employee-1042",
+    label="Front desk",
+    metadata={"site": "north", "shift": 2},
+)
+dn.collections.update_item(col["id"], item["id"], label=None)  # clears the label
+page = dn.collections.list_items(col["id"], reference_prefix="employee-")
+```
+
+| Call | |
+|---|---|
+| `create(name, type="face")`, `list()`, `get(collection_id)`, `delete(collection_id)` | The workspace's collections; `list()` also shows the public ones it may use |
+| `enroll(collection_id, image, reference, label=None, metadata=None)` | One face from one image, sent as a decision's image is |
+| `update_item(collection_id, item_id, reference=..., label=..., metadata=...)` | Sends only the fields given: `label=None` clears the label, `metadata` replaces the whole object |
+| `list_items(collection_id, offset=None, limit=None, reference=None, reference_prefix=None)` | A page of items; with `reference` or `reference_prefix` (not both) only the matching ones |
+| `delete_item(collection_id, item_id)` | Deletes one item |
+
+A `reference` is 1 to 64 of `A-Z`, `a-z`, `0-9`, `_`, `.`, `:` and `-`, a `label` 1 to 128
+characters. `metadata` is an object of up to 20 keys, each 1 to 40 of `a-z`, `0-9` and `_`,
+whose values are texts of up to 500 characters, numbers or `True`/`False`. These are checked
+before anything is sent. `create`, `enroll` and `update_item` send an `Idempotency-Key`, the
+same on every attempt of a call, so a retried call creates, enrolls or edits once.
+
 ## Errors
 
 Every error derives from `DecisionNodeError`, with `status`, `error_type`, `request_id`,
-`boosters` (for a request with boosters, what each booster did; an empty mapping otherwise)
-and `reason`: the server's explanation in words, from the `x-decisionnode-error` header,
+`boosters` (for a request with boosters, what each booster did; an empty mapping otherwise),
+`details` (the error body's `detail.details` when it is an object, such as
+`{"reason": "enrollment_unpriced"}`; `None` otherwise) and `reason`: the server's explanation in words, from the `x-decisionnode-error` header,
 for example `question 'q': a score takes up to 10 levels, got 11`. The error's own
 message, `str(e)` (also `e.message`), is the server's `message` exactly (`""` when the
 server sent none, never `None`), or the client's description when no response arrived.
@@ -894,7 +928,7 @@ The tests include the DecisionNode SDK conformance suite
 (`Bynn-Intelligence/decision-node-conformance`), run with both the sync and the async
 client. Set `DECISIONNODE_CONFORMANCE_DIR` to a checkout of it, or check it out at
 `conformance/` in this repository; without it the conformance tests fail rather than
-skip. The tests pass suite 1.14; CI checks the suite out at the commit pinned in
+skip. The tests pass suite 1.15; CI checks the suite out at the commit pinned in
 `CONFORMANCE_REF` in `.github/workflows/ci.yml`, with every action pinned to a commit SHA
 and no checkout keeping its credentials.
 

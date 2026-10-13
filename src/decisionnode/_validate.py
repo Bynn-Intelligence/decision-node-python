@@ -13,6 +13,7 @@ import ipaddress
 import json
 import math
 import re
+import unicodedata
 from decimal import Decimal
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 from urllib.parse import urlsplit
@@ -65,6 +66,13 @@ ITEM_REFERENCE_PATTERN = "^[A-Za-z0-9_.:-]{1,64}$"
 ITEM_LABEL_MAX = 128
 # A collections 422 echoes a string input cut to 64 characters, then "...".
 ECHO_CHARS = 64
+# An item's metadata (suite 1.15): at most 20 keys, each 1 to 40 of a-z, 0-9 and _, each
+# value a text of at most 500 characters, a number or a boolean. A text's control or
+# invisible characters, a number's range and the 4 KB limit are the server's to judge.
+METADATA_KEYS = 20
+METADATA_KEY_CHARS = 40
+METADATA_KEY_PATTERN = "[a-z0-9_]{1,40}"
+METADATA_TEXT_CHARS = 500
 UNITS = ("pixels", "normalized")
 Entry = Tuple[Dict[str, Any], Optional[str]]
 Limits = Mapping[str, Any]
@@ -910,18 +918,65 @@ def check_collection(kind: Any, name: Any) -> None:
         _raise_422(entries)
 
 
-def check_item(image: Any, reference: Any, label: Any) -> None:
+def check_item(image: Any, reference: Any, label: Any, metadata: Any = None) -> None:
     """An enrollment's fields, as the API checks them, in its order: the image, the
-    reference, the label. An empty reference or label is too short; of the picture only
-    a URL's rules are checked here."""
+    reference, the label, the metadata. An empty reference or label is too short; of the
+    picture only a URL's rules are checked here."""
     entries: List[Entry] = []
     if image is None:
         entries.append((_entry("missing", ["body", "image"], "Field required", None), None))
     entries.extend(_string_entries(["body", "reference"], reference, ITEM_REFERENCE_MAX, ITEM_REFERENCE_PATTERN))
     if label is not None:
         entries.extend(_string_entries(["body", "label"], label, ITEM_LABEL_MAX))
+    if metadata is not None:
+        entries.extend(_metadata_entries(metadata))
     if entries:
         _raise_422(entries)
+
+
+def check_item_update(reference: Any, label: Any, metadata: Any, unset: Any) -> None:
+    """An item's edit, as the API checks it: the fields given (``unset`` marks one left
+    out) checked as an enrollment's are, a label given as null clearing it, and at least
+    one field."""
+    entries: List[Entry] = []
+    if reference is not unset:
+        entries.extend(_string_entries(["body", "reference"], reference, ITEM_REFERENCE_MAX, ITEM_REFERENCE_PATTERN))
+    if label is not unset and label is not None:
+        entries.extend(_string_entries(["body", "label"], label, ITEM_LABEL_MAX))
+    if metadata is not unset:
+        entries.extend(_metadata_entries(metadata))
+    if reference is unset and label is unset and metadata is unset:
+        msg = "Send reference, label, metadata or any of them"
+        entries.append((_entry("missing", ["body"], msg, None), None))
+    if entries:
+        _raise_422(entries)
+
+
+def _metadata_entries(metadata: Any) -> List[Entry]:
+    """An item's metadata's 422 entries, in key order: an object of at most 20 keys
+    (that alone, before any key is read), each key 1 to 40 of a-z, 0-9 and _, each value
+    a text of at most 500 characters, a number or a boolean."""
+    loc: List[Any] = ["body", "metadata"]
+    if not isinstance(metadata, Mapping):
+        return [(_entry("value_error", loc, "Metadata is an object of keys and values.", _echoed(metadata)), None)]
+    if len(metadata) > METADATA_KEYS:
+        return [(_entry("value_error", loc, "Metadata holds at most %d keys." % METADATA_KEYS, None), None)]
+    out: List[Entry] = []
+    for key, value in metadata.items():
+        if not isinstance(key, str) or not re.fullmatch(METADATA_KEY_PATTERN, key):
+            text = str(key)
+            shown = "".join("?" if unicodedata.category(c) == "Cc" else c for c in text[:METADATA_KEY_CHARS])
+            shown += "..." if len(text) > METADATA_KEY_CHARS else ""
+            msg = 'A metadata key is 1 to %d characters of a-z, 0-9 and _: "%s".' % (METADATA_KEY_CHARS, shown)
+            out.append((_entry("value_error", loc, msg, None), None))
+        elif isinstance(value, str):
+            if len(value) > METADATA_TEXT_CHARS:
+                msg = "A metadata text is at most %d characters." % METADATA_TEXT_CHARS
+                out.append((_entry("value_error", loc + [key], msg, _echoed(value)), None))
+        elif not isinstance(value, (bool, int, float)):
+            msg = "A metadata value is a text, a number or true or false."
+            out.append((_entry("value_error", loc + [key], msg, _echoed(value)), None))
+    return out
 
 
 def check_enroll_image(image: Any) -> None:
@@ -943,3 +998,23 @@ def check_list_query(offset: Any, limit: Any) -> None:
         raise usage_error("Query parameter offset must be an integer of 0 or more, got %s." % (offset,))
     if limit is not None and (not _is_int(limit) or not 1 <= limit <= LIST_LIMIT_MAX):
         raise usage_error("Query parameter limit must be an integer from 1 to %d, got %s." % (LIST_LIMIT_MAX, limit))
+
+
+def check_reference_query(reference: Any, reference_prefix: Any) -> None:
+    """The items list's ``reference`` (exact) or ``reference_prefix``, never both, each
+    1 to 64 of A-Z, a-z, 0-9, _, ., : and -, as the API checks them."""
+    if reference is not None and reference_prefix is not None:
+        raise usage_error("Send query parameter reference or reference_prefix, not both.")
+    for name, value in (("reference", reference), ("reference_prefix", reference_prefix)):
+        if value is not None and (not isinstance(value, str) or not re.fullmatch(ITEM_REFERENCE_PATTERN, value)):
+            raise usage_error(
+                "Query parameter %s must be 1 to 64 characters of A-Z, a-z, 0-9, _, ., : and -, got %s."
+                % (name, _printable(str(value), ECHO_CHARS))
+            )
+
+
+def _printable(value: str, most: int) -> str:
+    """A caller's value as an API message echoes it: its first ``most`` characters, any
+    but printable ASCII written as ``\\u{hex}``, then "..." when it was longer."""
+    out = "".join(c if 0x20 <= ord(c) <= 0x7E else "\\u{%x}" % ord(c) for c in value[:most])
+    return out + ("..." if len(value) > most else "")

@@ -45,6 +45,17 @@ Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`).
   collection's type and name, an item's reference and label and the items list's `offset`
   and `limit` are checked before anything is sent; of the picture only a URL's rules are,
   every other fault is the API's 422 `image_unreadable`.
+- An item's `metadata`: `enroll` takes it, an object of up to 20 keys (1 to 40 of `a-z`,
+  `0-9` and `_`) whose values are texts of up to 500 characters, numbers or booleans,
+  checked before sending as the API checks it.
+- `collections.update_item(collection_id, item_id, reference, label, metadata)`: a `PATCH`
+  sending only the fields given (`label=None` clears the label, `metadata` replaces the
+  whole object), with an `Idempotency-Key` and the retries of `enroll`; with no field it
+  raises the API's `ValidationError` before sending.
+- `collections.list_items` takes `reference` or `reference_prefix` (not both), each checked
+  as the API checks it.
+- `DecisionNodeError.details`: the error body's `detail.details` when it is an object, else
+  `None`. A 529 whose `details.reason` is `enrollment_unpriced` is never retried.
 - A decision whose boosters name `ocr` waits 30 seconds per attempt unless a `timeout` was
   set on the client, and is never retried after a timeout, since the server finishes that
   attempt and may bill it; its other retries stay.

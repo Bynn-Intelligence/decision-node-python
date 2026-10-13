@@ -97,8 +97,10 @@ from ._validate import (
     check_frame,
     check_images,
     check_item,
+    check_item_update,
     check_lines,
     check_list_query,
+    check_reference_query,
     check_request,
     check_session_open,
     count_entries,
@@ -309,6 +311,24 @@ def _item_path(collection_id: Any, item_id: Any) -> str:
 def _collection_list(body: Any) -> List[Dict[str, Any]]:
     found = body.get("collections") if isinstance(body, Mapping) else None
     return list(found) if isinstance(found, list) else []
+
+
+def _items_query(offset: Any, limit: Any, reference: Any, reference_prefix: Any) -> Dict[str, Any]:
+    query: Dict[str, Any] = dict(_list_query(offset, limit))
+    check_reference_query(reference, reference_prefix)
+    for name, value in (("reference", reference), ("reference_prefix", reference_prefix)):
+        if value is not None:
+            query[name] = value
+    return query
+
+
+def _item_update(reference: Any, label: Any, metadata: Any) -> bytes:
+    check_item_update(reference, label, metadata, UNSET)
+    body: Dict[str, Any] = {}
+    for name, value in (("reference", reference), ("label", label), ("metadata", metadata)):
+        if value is not UNSET:
+            body[name] = value
+    return _base.encode(body)
 
 
 def _list_query(offset: Any, limit: Any) -> Dict[str, int]:
@@ -1524,12 +1544,19 @@ class Collections:
         return cast(Dict[str, Any], body)
 
     def enroll(
-        self, collection_id: str, image: ImageInput, reference: str, label: Optional[str] = None
+        self,
+        collection_id: str,
+        image: ImageInput,
+        reference: str,
+        label: Optional[str] = None,
+        metadata: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Enroll the face in ``image`` (the largest, when it shows several), sent as a
-        decision's image is: a URL as given, local bytes inline or uploaded."""
+        decision's image is: a URL as given, local bytes inline or uploaded. ``metadata``,
+        an object of up to 20 keys whose values are texts, numbers or booleans, is kept
+        with the item and sent only when given."""
         path = _collection_path(collection_id, "/items")
-        check_item(image, reference, label)
+        check_item(image, reference, label, metadata)
         client = self._client
         imgs = _base.image_list(image)
         check_enroll_image(imgs[0])
@@ -1537,15 +1564,41 @@ class Collections:
         item: Dict[str, Any] = {"image": wires[0], "reference": reference}
         if label is not None:
             item["label"] = label
+        if metadata is not None:
+            item["metadata"] = metadata
         _, _, body = client._json("POST", path, _base.encode(item), IDEMPOTENT, extra_headers=_idempotency_key())
         return cast(Dict[str, Any], body)
 
     def list_items(
-        self, collection_id: str, offset: Optional[int] = None, limit: Optional[int] = None
+        self,
+        collection_id: str,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+        reference: Optional[str] = None,
+        reference_prefix: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """One page of a collection's items, newest first."""
+        """One page of a collection's items, newest first; with ``reference`` only the
+        items of that reference, with ``reference_prefix`` those whose reference starts
+        with it (not both), in reference order."""
         path = _collection_path(collection_id, "/items")
-        _, _, body = self._client._json("GET", path, None, query=_list_query(offset, limit))
+        query = _items_query(offset, limit, reference, reference_prefix)
+        _, _, body = self._client._json("GET", path, None, query=query)
+        return cast(Dict[str, Any], body)
+
+    def update_item(
+        self,
+        collection_id: str,
+        item_id: str,
+        reference: Any = UNSET,
+        label: Any = UNSET,
+        metadata: Any = UNSET,
+    ) -> Dict[str, Any]:
+        """Edit an item, sending only the fields given: ``label=None`` clears the label,
+        and ``metadata`` replaces the item's whole object (``{}`` empties it). It carries
+        an ``Idempotency-Key`` and retries as ``enroll`` does."""
+        path = _item_path(collection_id, item_id)
+        content = _item_update(reference, label, metadata)
+        _, _, body = self._client._json("PATCH", path, content, IDEMPOTENT, extra_headers=_idempotency_key())
         return cast(Dict[str, Any], body)
 
     def delete_item(self, collection_id: str, item_id: str) -> Dict[str, Any]:
@@ -2240,11 +2293,17 @@ class AsyncCollections:
         return cast(Dict[str, Any], body)
 
     async def enroll(
-        self, collection_id: str, image: ImageInput, reference: str, label: Optional[str] = None
+        self,
+        collection_id: str,
+        image: ImageInput,
+        reference: str,
+        label: Optional[str] = None,
+        metadata: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Enroll the face in ``image``, sent as a decision's image is."""
+        """Enroll the face in ``image``, sent as a decision's image is, with ``metadata``
+        when given."""
         path = _collection_path(collection_id, "/items")
-        check_item(image, reference, label)
+        check_item(image, reference, label, metadata)
         client = self._client
         imgs = _base.image_list(image)
         check_enroll_image(imgs[0])
@@ -2252,15 +2311,41 @@ class AsyncCollections:
         item: Dict[str, Any] = {"image": wires[0], "reference": reference}
         if label is not None:
             item["label"] = label
+        if metadata is not None:
+            item["metadata"] = metadata
         _, _, body = await client._json("POST", path, _base.encode(item), IDEMPOTENT, extra_headers=_idempotency_key())
         return cast(Dict[str, Any], body)
 
     async def list_items(
-        self, collection_id: str, offset: Optional[int] = None, limit: Optional[int] = None
+        self,
+        collection_id: str,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+        reference: Optional[str] = None,
+        reference_prefix: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """One page of a collection's items, newest first."""
+        """One page of a collection's items, newest first; with ``reference`` only the
+        items of that reference, with ``reference_prefix`` those whose reference starts
+        with it (not both), in reference order."""
         path = _collection_path(collection_id, "/items")
-        _, _, body = await self._client._json("GET", path, None, query=_list_query(offset, limit))
+        query = _items_query(offset, limit, reference, reference_prefix)
+        _, _, body = await self._client._json("GET", path, None, query=query)
+        return cast(Dict[str, Any], body)
+
+    async def update_item(
+        self,
+        collection_id: str,
+        item_id: str,
+        reference: Any = UNSET,
+        label: Any = UNSET,
+        metadata: Any = UNSET,
+    ) -> Dict[str, Any]:
+        """Edit an item, sending only the fields given: ``label=None`` clears the label,
+        and ``metadata`` replaces the item's whole object (``{}`` empties it). It carries
+        an ``Idempotency-Key`` and retries as ``enroll`` does."""
+        path = _item_path(collection_id, item_id)
+        content = _item_update(reference, label, metadata)
+        _, _, body = await self._client._json("PATCH", path, content, IDEMPOTENT, extra_headers=_idempotency_key())
         return cast(Dict[str, Any], body)
 
     async def delete_item(self, collection_id: str, item_id: str) -> Dict[str, Any]:

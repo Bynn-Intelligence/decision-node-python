@@ -182,6 +182,7 @@ def test_delete_item(mode: str) -> None:
 WRITES: Dict[str, Dict[str, Any]] = {
     "create": {"name": "Staff"},
     "enroll": {"collection_id": COL, "image": URL_IMAGE, "reference": "r"},
+    "update_item": {"collection_id": COL, "item_id": ITM, "label": "Front desk"},
 }
 # A one-pixel GIF: a format the API does not read.
 GIF = (
@@ -195,7 +196,7 @@ def keys(rec: Recorder) -> List[Optional[str]]:
     return [r.headers.get("idempotency-key") for r in rec.requests]
 
 
-@pytest.mark.parametrize("call", ["create", "enroll"])
+@pytest.mark.parametrize("call", ["create", "enroll", "update_item"])
 def test_writes_carry_an_idempotency_key_kept_across_retries(
     mode: str, call: str, sleeps: List[float], fast_backoff: None
 ) -> None:
@@ -210,7 +211,7 @@ def test_writes_carry_an_idempotency_key_kept_across_retries(
     assert len(sent) == 3 and len(set(sent)) == 1 and UUID4.match(sent[0] or "")
 
 
-@pytest.mark.parametrize("call", ["create", "enroll"])
+@pytest.mark.parametrize("call", ["create", "enroll", "update_item"])
 def test_each_call_gets_a_new_key(mode: str, call: str) -> None:
     rec = Recorder(json_response(201, COLLECTION))
     h = Harness(mode, rec)
@@ -220,7 +221,7 @@ def test_each_call_gets_a_new_key(mode: str, call: str) -> None:
     assert first and second and first != second
 
 
-@pytest.mark.parametrize("call", ["create", "enroll"])
+@pytest.mark.parametrize("call", ["create", "enroll", "update_item"])
 def test_in_progress_is_retried_after_its_retry_after(mode: str, call: str, sleeps: List[float]) -> None:
     busy = json_response(
         409,
@@ -237,7 +238,7 @@ def test_in_progress_is_retried_after_its_retry_after(mode: str, call: str, slee
     assert len(rec.requests) == 2 and len(set(keys(rec))) == 1 and sleeps == [1.0]
 
 
-@pytest.mark.parametrize("call", ["create", "enroll"])
+@pytest.mark.parametrize("call", ["create", "enroll", "update_item"])
 def test_a_reused_key_is_raised_and_never_retried(mode: str, call: str, sleeps: List[float]) -> None:
     reused = error_body(
         409, "idempotency_key_reused", "This Idempotency-Key was already used with a different request."
@@ -454,3 +455,249 @@ def test_no_face_is_a_validation_error(mode: str) -> None:
     err = Harness(mode, rec).error("enroll", COL, URL_IMAGE, "emp-1042")
     assert isinstance(err, dn.ValidationError) and err.entries == entries and err.status == 422
     assert json.loads(rec.requests[0].content)["reference"] == "emp-1042"
+
+
+# --------------------------------------------------------------------------- item metadata, update_item, filters
+
+
+ITEM_PATH = "/v1/collections/%s/items/%s" % (COL, ITM)
+
+
+def test_enroll_sends_metadata_only_when_given(mode: str) -> None:
+    rec = Recorder(json_response(201, ITEM))
+    h = Harness(mode, rec)
+    h.call("enroll", COL, URL_IMAGE, "emp-1042", metadata={"site": "north", "shift": 2, "on_call": False})
+    assert rec.body()["metadata"] == {"site": "north", "shift": 2, "on_call": False}
+    h.call("enroll", COL, URL_IMAGE, "emp-1042", metadata={})
+    assert rec.body()["metadata"] == {}
+    h.call("enroll", COL, URL_IMAGE, "emp-1042")
+    assert "metadata" not in rec.body()
+
+
+def test_update_item_sends_only_the_fields_given(mode: str) -> None:
+    updated = dict(ITEM, label="Front desk", metadata={"site": "north"})
+    rec = Recorder(json_response(200, updated))
+    h = Harness(mode, rec)
+    assert h.call("update_item", COL, ITM, label="Front desk") == updated
+    req = rec.requests[-1]
+    assert (req.method, req.url.path) == ("PATCH", ITEM_PATH)
+    assert rec.body() == {"label": "Front desk"}
+    h.call("update_item", COL, ITM, reference="emp-2001", metadata={"site": "north"})
+    assert rec.body() == {"reference": "emp-2001", "metadata": {"site": "north"}}
+    h.call("update_item", collection_id=COL, item_id=ITM, reference="emp-2001", label="L", metadata={"a": 1})
+    assert rec.body() == {"reference": "emp-2001", "label": "L", "metadata": {"a": 1}}
+
+
+def test_update_item_label_none_clears_it_and_empty_metadata_is_sent(mode: str) -> None:
+    rec = Recorder(json_response(200, ITEM))
+    h = Harness(mode, rec)
+    h.call("update_item", COL, ITM, label=None)
+    assert rec.body() == {"label": None}
+    h.call("update_item", COL, ITM, metadata={})
+    assert rec.body() == {"metadata": {}}
+
+
+def test_update_item_quotes_its_ids(mode: str) -> None:
+    rec = Recorder(json_response(200, ITEM))
+    Harness(mode, rec).call("update_item", "a/b", "c d", label="x")
+    assert rec.requests[0].url.raw_path == b"/v1/collections/a%2Fb/items/c%20d"
+
+
+def test_update_item_with_no_field_is_a_validation_error(mode: str) -> None:
+    assert local_entries(mode, "update_item", collection_id=COL, item_id=ITM) == [
+        {"type": "missing", "loc": ["body"], "msg": "Send reference, label, metadata or any of them", "input": None}
+    ]
+
+
+def test_update_item_checks_reference_and_label_as_enroll_does(mode: str) -> None:
+    def enroll(**kwargs: Any) -> List[Dict[str, Any]]:
+        return local_entries(mode, "enroll", collection_id=COL, image=URL_IMAGE, **kwargs)
+
+    def update(**kwargs: Any) -> List[Dict[str, Any]]:
+        return local_entries(mode, "update_item", collection_id=COL, item_id=ITM, **kwargs)
+
+    for bad in ["", "has space", "x" * 65]:
+        assert update(reference=bad) == enroll(reference=bad)
+    for bad in ["", "x" * 129]:
+        assert update(label=bad) == enroll(reference="r", label=bad)
+    assert [e["loc"] for e in update(reference="", label="")] == [["body", "reference"], ["body", "label"]]
+
+
+def metadata_entries(mode: str, metadata: Any) -> List[Dict[str, Any]]:
+    entries = local_entries(mode, "update_item", collection_id=COL, item_id=ITM, metadata=metadata)
+    assert entries == local_entries(
+        mode, "enroll", collection_id=COL, image=URL_IMAGE, reference="r", metadata=metadata
+    )
+    return entries
+
+
+def sent_metadata(mode: str, metadata: Any) -> bool:
+    rec = Recorder(json_response(200, ITEM))
+    Harness(mode, rec).call("update_item", COL, ITM, metadata=metadata)
+    return bool(rec.body() == {"metadata": metadata})
+
+
+def value_error(loc: List[Any], msg: str, value: Any) -> Dict[str, Any]:
+    return {"type": "value_error", "loc": loc, "msg": msg, "input": value}
+
+
+def test_metadata_must_be_an_object(mode: str) -> None:
+    msg = "Metadata is an object of keys and values."
+    assert metadata_entries(mode, "site") == [value_error(["body", "metadata"], msg, "site")]
+    assert metadata_entries(mode, ["a"]) == [value_error(["body", "metadata"], msg, None)]
+    assert metadata_entries(mode, 3) == [value_error(["body", "metadata"], msg, 3)]
+    assert metadata_entries(mode, "x" * 65) == [value_error(["body", "metadata"], msg, "x" * 64 + "...")]
+
+
+def test_metadata_holds_at_most_20_keys_and_that_alone(mode: str) -> None:
+    too_many = {("K%d" % i): [] for i in range(21)}
+    assert metadata_entries(mode, too_many) == [
+        value_error(["body", "metadata"], "Metadata holds at most 20 keys.", None)
+    ]
+
+
+def test_twenty_good_keys_are_sent(mode: str) -> None:
+    rec = Recorder(json_response(200, ITEM))
+    metadata = {"k%d" % i: i for i in range(20)}
+    Harness(mode, rec).call("update_item", COL, ITM, metadata=metadata)
+    assert rec.body() == {"metadata": metadata}
+
+
+def test_metadata_keys(mode: str) -> None:
+    def key_msg(shown: str) -> str:
+        return 'A metadata key is 1 to 40 characters of a-z, 0-9 and _: "%s".' % shown
+
+    loc = ["body", "metadata"]
+    assert metadata_entries(mode, {"": 1}) == [value_error(loc, key_msg(""), None)]
+    assert metadata_entries(mode, {"Site": 1}) == [value_error(loc, key_msg("Site"), None)]
+    assert metadata_entries(mode, {"a-b": 1}) == [value_error(loc, key_msg("a-b"), None)]
+    assert metadata_entries(mode, {"a\nb\x00": 1}) == [value_error(loc, key_msg("a?b?"), None)]
+    assert metadata_entries(mode, {"x" * 41: 1}) == [value_error(loc, key_msg("x" * 40 + "..."), None)]
+    assert sent_metadata(mode, {"x" * 40: 1, "y": 2})
+
+
+def test_metadata_values(mode: str) -> None:
+    text = "A metadata text is at most 500 characters."
+    kind = "A metadata value is a text, a number or true or false."
+    loc = ["body", "metadata"]
+    assert sent_metadata(mode, {"a": "x" * 500, "b": 1.5, "c": True, "d": -3})
+    assert metadata_entries(mode, {"note": "x" * 501}) == [value_error(loc + ["note"], text, "x" * 64 + "...")]
+    assert metadata_entries(mode, {"n": None}) == [value_error(loc + ["n"], kind, None)]
+    assert metadata_entries(mode, {"n": {"deep": 1}}) == [value_error(loc + ["n"], kind, None)]
+    assert metadata_entries(mode, {"n": [1, 2]}) == [value_error(loc + ["n"], kind, None)]
+
+
+def test_metadata_entries_come_in_key_order_after_label(mode: str) -> None:
+    entries = local_entries(
+        mode,
+        "update_item",
+        collection_id=COL,
+        item_id=ITM,
+        reference="",
+        label="",
+        metadata={"ok": 1, "Bad": 1, "n": None, "t": "x" * 501},
+    )
+    assert [e["loc"] for e in entries] == [
+        ["body", "reference"],
+        ["body", "label"],
+        ["body", "metadata"],
+        ["body", "metadata", "n"],
+        ["body", "metadata", "t"],
+    ]
+
+
+def test_list_items_by_reference_or_prefix(mode: str) -> None:
+    page = {"items": [ITEM], "offset": 0, "limit": 20, "total": 1}
+    rec = Recorder(json_response(200, page))
+    h = Harness(mode, rec)
+    assert h.call("list_items", COL, reference="emp-1042") == page
+    assert dict(rec.requests[-1].url.params) == {"reference": "emp-1042"}
+    h.call("list_items", COL, offset=20, limit=10, reference_prefix="emp:north.")
+    assert dict(rec.requests[-1].url.params) == {"offset": "20", "limit": "10", "reference_prefix": "emp:north."}
+    assert rec.requests[-1].url.query == b"offset=20&limit=10&reference_prefix=emp%3Anorth."
+    h.call("list_items", COL)
+    assert rec.requests[-1].url.query == b""
+
+
+def list_usage_error(mode: str, **kwargs: Any) -> str:
+    rec = Recorder(json_response(200, {}))
+    err = Harness(mode, rec).error("list_items", COL, **kwargs)
+    assert isinstance(err, dn.BadRequestError) and (err.status, err.error_type) == (None, "api_usage_error")
+    assert rec.requests == []
+    return err.message
+
+
+def test_list_items_reference_checks(mode: str) -> None:
+    def pattern(name: str, got: str) -> str:
+        return "Query parameter %s must be 1 to 64 characters of A-Z, a-z, 0-9, _, ., : and -, got %s." % (name, got)
+
+    assert list_usage_error(mode, reference="a", reference_prefix="b") == (
+        "Send query parameter reference or reference_prefix, not both."
+    )
+    assert list_usage_error(mode, reference="") == pattern("reference", "")
+    assert list_usage_error(mode, reference="a b") == pattern("reference", "a b")
+    assert list_usage_error(mode, reference_prefix="a\tbé") == pattern("reference_prefix", "a\\u{9}b\\u{e9}")
+    assert list_usage_error(mode, reference="x" * 65) == pattern("reference", "x" * 64 + "...")
+    assert list_usage_error(mode, reference_prefix="x" * 64 + "!") == pattern("reference_prefix", "x" * 64 + "...")
+
+
+def test_list_items_paging_is_checked_before_the_reference(mode: str) -> None:
+    assert list_usage_error(mode, limit=0, reference="a", reference_prefix="b").startswith("Query parameter limit")
+    assert list_usage_error(mode, offset=-1, reference="").startswith("Query parameter offset")
+
+
+def test_update_item_errors(mode: str) -> None:
+    rec = Recorder(error_body(404, "item_not_found", "No item."))
+    err = Harness(mode, rec).error("update_item", COL, ITM, label="x")
+    assert type(err) is dn.NotFoundError and err.error_type == "item_not_found"
+
+
+# --------------------------------------------------------------------------- error details
+
+
+def test_details_are_read_when_an_object(mode: str) -> None:
+    details = {"reason": "face_model_unavailable", "retry": True}
+    rec = Recorder(json_response(400, {"detail": {"error_type": "bad", "message": "m", "details": details}}))
+    err = Harness(mode, rec).error("get", COL)
+    assert err.details == details
+
+
+@pytest.mark.parametrize(
+    "detail", [{"error_type": "bad", "message": "m"}, {"error_type": "bad", "message": "m", "details": "x"}]
+)
+def test_details_are_empty_otherwise(mode: str, detail: Dict[str, Any]) -> None:
+    err = Harness(mode, Recorder(json_response(400, {"detail": detail}))).error("get", COL)
+    assert not err.details
+
+
+def test_local_errors_have_no_details(mode: str) -> None:
+    err = Harness(mode, Recorder(json_response(200, {}))).error("update_item", COL, ITM)
+    assert not err.details
+
+
+def unpriced(reason: str) -> httpx.Response:
+    return json_response(
+        529,
+        {"detail": {"error_type": "overloaded_error", "message": "m", "details": {"reason": reason}}},
+    )
+
+
+@pytest.mark.parametrize("call", ["enroll", "update_item", "create"])
+def test_an_unpriced_enrollment_is_never_retried(mode: str, call: str, sleeps: List[float], fast_backoff: None) -> None:
+    rec = Recorder(unpriced("enrollment_unpriced"), json_response(201, COLLECTION))
+    err = Harness(mode, rec, max_retries=3).error(call, **WRITES[call])
+    assert (err.status, (err.details or {}).get("reason")) == (529, "enrollment_unpriced")
+    assert len(rec.requests) == 1 and sleeps == []
+
+
+def test_face_model_unavailable_is_retried_as_every_529(mode: str, sleeps: List[float], fast_backoff: None) -> None:
+    rec = Recorder(unpriced("face_model_unavailable"), json_response(201, ITEM))
+    assert Harness(mode, rec, max_retries=3).call("enroll", **WRITES["enroll"]) == ITEM
+    assert len(rec.requests) == 2 and len(set(keys(rec))) == 1
+
+
+def test_key_scope_denied_is_permission_denied(mode: str) -> None:
+    rec = Recorder(error_body(403, "key_scope_denied", "This key may not use collections."))
+    err = Harness(mode, rec).error("update_item", COL, ITM, label="x")
+    assert type(err) is dn.PermissionDeniedError and (err.status, err.error_type) == (403, "key_scope_denied")
+    assert len(rec.requests) == 1

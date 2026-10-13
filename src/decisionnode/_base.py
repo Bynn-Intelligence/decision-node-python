@@ -72,8 +72,8 @@ COLLECTIONS_PATH = "/v1/collections"
 # could create a second draft. SESSION_OPEN: as DEFAULT, except that a 429
 # session_limit_exceeded is never retried. OCR (a decision whose boosters name ocr): as
 # DEFAULT, except that a timeout is never retried, since the server finishes that attempt
-# and may bill it. IDEMPOTENT (collections create and enroll, which carry their own
-# Idempotency-Key, the same on every attempt): as DEFAULT, and also a 409
+# and may bill it. IDEMPOTENT (collections create, enroll and update_item, which carry
+# their own Idempotency-Key, the same on every attempt): as DEFAULT, and also a 409
 # idempotency_in_progress, after its Retry-After; a 409 idempotency_key_reused is raised.
 DEFAULT = "default"
 MUTATION = "mutation"
@@ -81,6 +81,8 @@ SESSION_OPEN = "session_open"
 OCR = "ocr"
 IDEMPOTENT = "idempotent"
 IDEMPOTENCY_IN_PROGRESS = "idempotency_in_progress"
+# The reason of a 529 that is never retried (it has no Retry-After).
+ENROLLMENT_UNPRICED = "enrollment_unpriced"
 
 # A 400 for an upload the client placed in the request: it uploads again and sends the
 # request once more.
@@ -299,6 +301,9 @@ def check_fallback(fallback: Any) -> Optional[bool]:
 
 
 def should_retry(policy: str, status: int, error: DecisionNodeError) -> bool:
+    if status == 529 and (error.details or {}).get("reason") == ENROLLMENT_UNPRICED:
+        # An enrollment the API has no price for: a retry never cures it.
+        return False
     if policy == MUTATION:
         return status in (429, 529)
     if policy == SESSION_OPEN and isinstance(error, SessionLimitError):
@@ -471,10 +476,13 @@ def make_error(status: int, headers: Mapping[str, str], text: str) -> DecisionNo
     error_type: Optional[str] = None
     category: Optional[str] = None
     entries: Optional[List[Any]] = None
+    details: Optional[Mapping[str, Any]] = None
     if isinstance(detail, Mapping):
         error_type = detail.get("error_type")
         message = detail.get("message")
         category = detail.get("category")
+        if isinstance(detail.get("details"), Mapping):
+            details = detail["details"]
     elif isinstance(detail, str):
         message = detail
     elif isinstance(detail, list):
@@ -486,6 +494,7 @@ def make_error(status: int, headers: Mapping[str, str], text: str) -> DecisionNo
         reason=headers.get("x-decisionnode-error"),
         body=body,
         headers=headers,
+        details=details,
     )
     if status == 400:
         if error_type == "max_tokens_exceeded":

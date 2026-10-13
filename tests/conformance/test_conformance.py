@@ -409,6 +409,8 @@ def norm_error(e: dn.DecisionNodeError) -> Dict[str, Any]:
         "entries": getattr(e, "entries", None),
         "retry_after": getattr(e, "retry_after", None),
         "boosters": norm_boosters(e.boosters),
+        # Suite 1.15: detail.details when it is an object, else empty.
+        "details": e.details,
     }
 
 

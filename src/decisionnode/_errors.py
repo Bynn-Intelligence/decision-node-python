@@ -65,6 +65,9 @@ class DecisionNodeError(Exception):
             ``x-decisionnode-boosters`` header: booster name to :class:`BoosterStatus`, in
             the request's order, so a caller can see which required booster failed.
             Empty when the header is absent.
+        details: ``detail.details`` from the error body when it is an object, the error's
+            particulars in the API's own words (for example ``{"reason":
+            "enrollment_unpriced"}`` on an enrollment's 529); ``None`` otherwise.
     """
 
     def __init__(
@@ -77,8 +80,10 @@ class DecisionNodeError(Exception):
         reason: Optional[str] = None,
         body: Any = None,
         headers: Optional[Mapping[str, str]] = None,
+        details: Optional[Mapping[str, Any]] = None,
     ) -> None:
         self.status = status
+        self.details: Optional[Dict[str, Any]] = dict(details) if isinstance(details, Mapping) else None
         self.error_type = error_type
         self.request_id = request_id
         self.reason = reason
