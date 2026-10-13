@@ -1,5 +1,7 @@
 # DecisionNode Python SDK
 
+[DecisionNode](https://decisionnode.com) is a decision engine: send it text, JSON or images with a question, and it answers with calibrated probabilities.
+
 The official Python client for the DecisionNode API: ask yes-or-no, multiple-choice,
 scale and number questions about any text, JSON or image, and get calibrated
 probabilities back. One request at a time, a live session answering a stream of frames,

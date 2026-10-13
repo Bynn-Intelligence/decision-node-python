@@ -5,12 +5,12 @@ build-backend = "hatchling.build"
 [project]
 name = "bynn-decisionnode"
 version = "0.3.1"
-description = "The official Python client for the DecisionNode API."
+description = "The official Python client for DecisionNode, a decision engine that answers questions about text, JSON and images with calibrated probabilities."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
 authors = [{ name = "Bynn Intelligence, Inc." }]
-keywords = ["decisionnode", "decision", "classification", "api", "sdk", "websocket"]
+keywords = ["decisionnode", "decision-engine", "decision", "classification", "api", "sdk", "websocket"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
