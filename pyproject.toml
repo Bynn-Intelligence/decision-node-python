@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bynn-decisionnode"
-version = "0.3.1"
+version = "0.3.2"
 description = "The official Python client for DecisionNode, a decision engine that answers questions about text, JSON and images with calibrated probabilities."
 readme = "README.md"
 license = { text = "MIT" }
