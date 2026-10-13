@@ -1,4 +1,4 @@
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 # The version of the SDK specification this package implements, shared by every
 # official DecisionNode SDK.
