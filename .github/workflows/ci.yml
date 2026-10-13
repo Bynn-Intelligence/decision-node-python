@@ -1,9 +1,9 @@
 # Lint, type-check, unit tests and the SDK conformance suite on every push and pull
 # request. This workflow builds the package to check that it builds; it never publishes.
 #
-# The conformance suite is checked out from Bynn-Intelligence/decision-node-conformance
-# with the organisation secret DECISIONNODE_CONFORMANCE_TOKEN (read-only on that one
-# repository), at the commit pinned in CONFORMANCE_REF below. The test run starts the
+# The conformance suite is checked out from the public repository
+# Bynn-Intelligence/decision-node-conformance, with no token, at the commit pinned in
+# CONFORMANCE_REF below. The test run starts the
 # suite's mock server and runs every case; it fails when the suite is missing.
 #
 # Supply chain: every action is pinned to a commit SHA (the release tag is in the
@@ -19,9 +19,9 @@ permissions:
   contents: read
 
 env:
-  # The conformance suite commit this SDK is tested against (suite 1.13, for specification
+  # The conformance suite commit this SDK is tested against (suite 1.13, tag v1.13, for specification
   # 1.3). Change it here only.
-  CONFORMANCE_REF: 5f996eabc796c15d97655169dff7c8082e8a5d48
+  CONFORMANCE_REF: ede3f8b03d85111ca61085df5aa7a306ab5ec943
   UV_VERSION: "0.7.13"
 
 concurrency:
@@ -59,7 +59,6 @@ jobs:
         with:
           repository: Bynn-Intelligence/decision-node-conformance
           ref: ${{ env.CONFORMANCE_REF }}
-          token: ${{ secrets.DECISIONNODE_CONFORMANCE_TOKEN }}
           path: conformance
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
