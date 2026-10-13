@@ -314,7 +314,9 @@ def test_create_checks(mode: str) -> None:
             "ctx": {"min_length": 1},
         }
     ]
-    assert local_entries(mode, "create", name="x" * 81)[0]["ctx"] == {"max_length": 80}
+    too_long = local_entries(mode, "create", name="x" * 81)[0]
+    assert (too_long["ctx"], too_long["input"]) == ({"max_length": 80}, "x" * 64 + "...")
+    assert local_entries(mode, "create", name="n", type={"kind": "face"})[0]["input"] is None
     assert local_entries(mode, "create", name="x" * 80, type="plate")[0]["type"] == "literal_error"
     # Both faults in one list, type first.
     assert [e["type"] for e in local_entries(mode, "create", name="", type="plate")] == [
@@ -330,16 +332,35 @@ def test_enroll_checks(mode: str) -> None:
         return e
 
     pattern = "^[A-Za-z0-9_.:-]{1,64}$"
-    # An empty reference fails the pattern, as the API answers it.
-    for bad in ("", "emp 1042"):
-        assert entry(reference=bad) == {
-            "type": "string_pattern_mismatch",
-            "loc": ["body", "reference"],
-            "msg": "String should match pattern '%s'" % pattern,
-            "input": bad,
-            "ctx": {"pattern": pattern},
+    assert entry(reference="emp 1042") == {
+        "type": "string_pattern_mismatch",
+        "loc": ["body", "reference"],
+        "msg": "String should match pattern '%s'" % pattern,
+        "input": "emp 1042",
+        "ctx": {"pattern": pattern},
+    }
+    # The length comes before the pattern: an empty reference or label is too short.
+    for field in ("reference", "label"):
+        assert entry(**{field: ""}) == {
+            "type": "string_too_short",
+            "loc": ["body", field],
+            "msg": "String should have at least 1 character",
+            "input": "",
+            "ctx": {"min_length": 1},
         }
-    assert entry(reference="e" * 65)["ctx"] == {"max_length": 64}
+    # A too-long input is echoed as the API echoes it: 64 characters, then "...".
+    assert entry(reference="e" * 65) == {
+        "type": "string_too_long",
+        "loc": ["body", "reference"],
+        "msg": "String should have at most 64 characters",
+        "input": "e" * 64 + "...",
+        "ctx": {"max_length": 64},
+    }
+    # A value that is not a string: an object or an array is echoed as null, a number as is.
+    assert entry(reference={"a": 1})["input"] is None
+    assert entry(reference=["a"])["input"] is None
+    assert entry(reference=7)["input"] == 7
+    assert entry(image=None)["input"] is None
     assert entry(reference=None) == {
         "type": "missing",
         "loc": ["body", "reference"],
@@ -350,7 +371,7 @@ def test_enroll_checks(mode: str) -> None:
         "type": "string_too_long",
         "loc": ["body", "label"],
         "msg": "String should have at most 128 characters",
-        "input": "l" * 129,
+        "input": "l" * 64 + "...",
         "ctx": {"max_length": 128},
     }
     # A reference of exactly 64 and a label of exactly 128 are sent.

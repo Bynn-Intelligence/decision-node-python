@@ -63,6 +63,8 @@ COLLECTION_NAME_MAX = 80
 ITEM_REFERENCE_MAX = 64
 ITEM_REFERENCE_PATTERN = "^[A-Za-z0-9_.:-]{1,64}$"
 ITEM_LABEL_MAX = 128
+# A collections 422 echoes a string input cut to 64 characters, then "...".
+ECHO_CHARS = 64
 UNITS = ("pixels", "normalized")
 Entry = Tuple[Dict[str, Any], Optional[str]]
 Limits = Mapping[str, Any]
@@ -866,19 +868,31 @@ def check_lines(requests: Sequence[Any], allow_empty: bool, limits: Optional[Lim
         seen.add(cid)
 
 
-def _string_entries(loc: List[Any], value: Any, least: int, most: int, pattern: Optional[str] = None) -> List[Entry]:
-    """A string field's 422 entry, as the API answers it: missing, not a string, too
-    short, too long, or not matching ``pattern``."""
+def _echoed(value: Any) -> Any:
+    """An input as a collections 422 entry echoes it, as the API does: a string cut to
+    its first 64 characters, with "..." added only when it was longer; an object or an
+    array never (null); a number, a boolean or null as it is."""
+    if isinstance(value, str):
+        return value[:ECHO_CHARS] + ("..." if len(value) > ECHO_CHARS else "")
+    if isinstance(value, (Mapping, list, tuple)):
+        return None
+    return value
+
+
+def _string_entries(loc: List[Any], value: Any, most: int, pattern: Optional[str] = None) -> List[Entry]:
+    """A collections string field's 422 entry, as the API answers it: missing, not a
+    string, empty, too long, or not matching ``pattern`` (checked after the length); its
+    input echoed within bounds."""
     if value is None:
-        return [(_entry("missing", loc, "Field required", None), None)] if least else []
+        return [(_entry("missing", loc, "Field required", None), None)]
     if not isinstance(value, str):
-        return [(_entry("string_type", loc, "Input should be a valid string", value), None)]
-    if len(value) < least:
-        msg = "String should have at least %d character%s" % (least, "" if least == 1 else "s")
-        return [(_entry("string_too_short", loc, msg, value, {"min_length": least}), None)]
+        return [(_entry("string_type", loc, "Input should be a valid string", _echoed(value)), None)]
+    if not value:
+        msg = "String should have at least 1 character"
+        return [(_entry("string_too_short", loc, msg, value, {"min_length": 1}), None)]
     if len(value) > most:
         msg = "String should have at most %d characters" % most
-        return [(_entry("string_too_long", loc, msg, value, {"max_length": most}), None)]
+        return [(_entry("string_too_long", loc, msg, _echoed(value), {"max_length": most}), None)]
     if pattern is not None and not re.fullmatch(pattern, value):
         msg = "String should match pattern '%s'" % pattern
         return [(_entry("string_pattern_mismatch", loc, msg, value, {"pattern": pattern}), None)]
@@ -889,26 +903,23 @@ def check_collection(kind: Any, name: Any) -> None:
     """A new collection's type and name, as the API checks them."""
     entries: List[Entry] = []
     if kind not in COLLECTION_TYPES:
-        entries.append(
-            (_entry("literal_error", ["body", "type"], "Input should be 'face'", kind, {"expected": "'face'"}), None)
-        )
-    entries.extend(_string_entries(["body", "name"], name, 1, COLLECTION_NAME_MAX))
+        msg, ctx = "Input should be 'face'", {"expected": "'face'"}
+        entries.append((_entry("literal_error", ["body", "type"], msg, _echoed(kind), ctx), None))
+    entries.extend(_string_entries(["body", "name"], name, COLLECTION_NAME_MAX))
     if entries:
         _raise_422(entries)
 
 
 def check_item(image: Any, reference: Any, label: Any) -> None:
-    """An enrollment's fields, as the API checks them. An empty reference fails the
-    pattern, as the API answers it; of the picture only a URL's rules are checked here."""
+    """An enrollment's fields, as the API checks them, in its order: the image, the
+    reference, the label. An empty reference or label is too short; of the picture only
+    a URL's rules are checked here."""
     entries: List[Entry] = []
     if image is None:
-        entries.append((_entry("missing", ["body", "image"], "Field required", {"reference": reference}), None))
-    if reference is None:
-        entries.append((_entry("missing", ["body", "reference"], "Field required", None), None))
-    else:
-        entries.extend(_string_entries(["body", "reference"], reference, 0, ITEM_REFERENCE_MAX, ITEM_REFERENCE_PATTERN))
+        entries.append((_entry("missing", ["body", "image"], "Field required", None), None))
+    entries.extend(_string_entries(["body", "reference"], reference, ITEM_REFERENCE_MAX, ITEM_REFERENCE_PATTERN))
     if label is not None:
-        entries.extend(_string_entries(["body", "label"], label, 0, ITEM_LABEL_MAX))
+        entries.extend(_string_entries(["body", "label"], label, ITEM_LABEL_MAX))
     if entries:
         _raise_422(entries)
 
