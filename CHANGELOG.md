@@ -35,6 +35,10 @@ Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`).
   `FaceMatch` with a `FaceBox`, a `score`, the `collection` searched, the item's
   `reference`, and `name` or `label`, `None` when absent). Box corners are kept as
   received. A malformed reading is an `UnknownReading`.
+- `FaceRecognitionReading.collection_name`, and on each `FaceMatch` its `collection_name`
+  and the item's `metadata` (an object as sent), each `None` when absent, never `{}`. A
+  `collection_name` that is not a text or a `metadata` that is not an object makes the
+  reading an `UnknownReading`.
 - Collections of faces, as `dn.collections`: `create`, `list`, `get`, `delete`, `enroll`
   (one face from one image, sent as a decision's image is), `list_items` and
   `delete_item`, each returning the API's object as sent. `create` and `enroll` send an

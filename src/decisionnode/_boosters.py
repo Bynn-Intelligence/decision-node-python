@@ -258,6 +258,11 @@ class FaceMatch:
             one; ``None`` otherwise.
         label: The item's label, for an item of your own collection that has one;
             ``None`` otherwise.
+        collection_name: The collection's display name, for your own collection (its
+            ``col_`` id when it has none), or a public collection's id; ``None`` when
+            the server sent none.
+        metadata: The item's metadata, for an item of your own collection that has any,
+            as sent; ``None`` otherwise, never ``{}``.
     """
 
     box: FaceBox
@@ -266,6 +271,8 @@ class FaceMatch:
     reference: str
     name: Optional[str] = None
     label: Optional[str] = None
+    collection_name: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -275,10 +282,13 @@ class FaceRecognitionReading(Reading):
     Attributes:
         faces: How many faces were searched.
         matches: The faces that match an item, by score; empty when none does.
+        collection_name: Your own collection's display name, as sent; ``None`` for a
+            public collection or when the server sent none.
     """
 
     faces: int
     matches: List[FaceMatch]
+    collection_name: Optional[str] = None
 
 
 AnyReading = Union[
@@ -438,6 +448,15 @@ def _optional_string(raw: Mapping[str, Any], key: str) -> Optional[str]:
     return value
 
 
+def _optional_object(raw: Mapping[str, Any], key: str) -> Optional[Dict[str, Any]]:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise _Malformed(key)
+    return dict(value)
+
+
 def _face_match(e: Mapping[str, Any]) -> FaceMatch:
     return FaceMatch(
         box=_box(e),
@@ -446,6 +465,8 @@ def _face_match(e: Mapping[str, Any]) -> FaceMatch:
         reference=_string(e, "reference"),
         name=_optional_string(e, "name"),
         label=_optional_string(e, "label"),
+        collection_name=_optional_string(e, "collection_name"),
+        metadata=_optional_object(e, "metadata"),
     )
 
 
@@ -455,6 +476,7 @@ def _face_recognition(raw: Dict[str, Any]) -> FaceRecognitionReading:
         raw=raw,
         faces=_faces(raw),
         matches=[_face_match(e) for e in _entries(raw, "matches")],
+        collection_name=_optional_string(raw, "collection_name"),
     )
 
 

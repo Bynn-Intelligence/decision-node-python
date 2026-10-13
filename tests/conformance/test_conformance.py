@@ -313,6 +313,7 @@ def norm_reading(r: Any) -> Dict[str, Any]:
             "kind": "face_recognition",
             "image": r.image,
             "faces": r.faces,
+            "collection_name": r.collection_name,
             "matches": [
                 {
                     "box": norm_box(m.box),
@@ -321,6 +322,8 @@ def norm_reading(r: Any) -> Dict[str, Any]:
                     "reference": m.reference,
                     "name": m.name,
                     "label": m.label,
+                    "collection_name": m.collection_name,
+                    "metadata": m.metadata,
                 }
                 for m in r.matches
             ],

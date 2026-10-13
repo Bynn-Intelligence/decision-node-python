@@ -110,6 +110,9 @@ def test_face_recognition_reading() -> None:
     assert (reading.matches[2].name, reading.matches[2].label) == (None, None)
     empty = readings("face_recognition", [{"image": "gate", "faces": 1, "matches": []}])[0]
     assert type(empty) is dn.FaceRecognitionReading and empty.matches == []
+    # collection_name is empty when absent, on the reading and on each match, and so is metadata.
+    assert reading.collection_name is None
+    assert (reading.matches[2].collection_name, reading.matches[2].metadata) == (None, None)
     # wanted_person is no longer a booster this client knows: its reading is generic.
     (old,) = readings("wanted_person", [{"image": "gate", "faces": 1, "matches": []}])
     assert type(old) is dn.UnknownReading
@@ -136,11 +139,59 @@ def test_malformed_face_detection_is_generic(raw: Dict[str, Any]) -> None:
     assert type(reading) is dn.UnknownReading and reading.raw == raw
 
 
+def test_face_recognition_collection_name_and_metadata() -> None:
+    meta = {"department": "facilities", "badge": 1042, "visitor": False}
+    own = {
+        "box": BOX,
+        "score": 0.81,
+        "collection": "col_1",
+        "reference": "emp-1042",
+        "collection_name": "Staff",
+        "metadata": meta,
+    }
+    public = {"box": BOX, "score": 0.91, "collection": "celebrities", "reference": "celeb-00412"}
+    raw = {"image": "gate", "faces": 2, "collection_name": "Staff", "matches": [own, public]}
+    (reading,) = readings("face_recognition", [raw])
+    assert type(reading) is dn.FaceRecognitionReading and reading.collection_name == "Staff"
+    assert (reading.matches[0].collection_name, reading.matches[0].metadata) == ("Staff", meta)
+    assert (reading.matches[1].collection_name, reading.matches[1].metadata) == (None, None)
+    # An explicit null is as absent, never an empty object.
+    nulls = dict(public, collection_name=None, metadata=None)
+    (bare,) = readings("face_recognition", [{"image": "gate", "faces": 1, "collection_name": None, "matches": [nulls]}])
+    assert type(bare) is dn.FaceRecognitionReading and bare.collection_name is None
+    assert (bare.matches[0].collection_name, bare.matches[0].metadata) == (None, None)
+    # An empty object is kept as sent.
+    (empty,) = readings("face_recognition", [{"image": "gate", "faces": 1, "matches": [dict(public, metadata={})]}])
+    assert type(empty) is dn.FaceRecognitionReading and empty.matches[0].metadata == {}
+
+
 @pytest.mark.parametrize(
     "raw",
     [
         {"image": "a", "faces": 1},
         {"image": "a", "matches": []},
+        {"image": "a", "faces": 1, "matches": [], "collection_name": 5},
+        {"image": "a", "faces": 1, "matches": [], "collection_name": ["Staff"]},
+        {
+            "image": "a",
+            "faces": 1,
+            "matches": [{"box": BOX, "score": 0.9, "collection": "c", "reference": "r", "collection_name": 3}],
+        },
+        {
+            "image": "a",
+            "faces": 1,
+            "matches": [{"box": BOX, "score": 0.9, "collection": "c", "reference": "r", "metadata": "x"}],
+        },
+        {
+            "image": "a",
+            "faces": 1,
+            "matches": [{"box": BOX, "score": 0.9, "collection": "c", "reference": "r", "metadata": [1]}],
+        },
+        {
+            "image": "a",
+            "faces": 1,
+            "matches": [{"box": BOX, "score": 0.9, "collection": "c", "reference": "r", "metadata": False}],
+        },
         {"image": "a", "faces": "1", "matches": []},
         {"image": "a", "faces": 1, "matches": [{"box": BOX, "score": 0.9, "collection": "c"}]},
         {"image": "a", "faces": 1, "matches": [{"box": BOX, "score": 0.9, "collection": "c", "reference": 7}]},
