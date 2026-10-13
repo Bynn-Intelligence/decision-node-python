@@ -1,7 +1,9 @@
 # Runs only while the repository is public: nothing is bumped, tagged or
 # published while it is private. The one other change from the copied
 # workflow: the built files are checked for names that must not ship before
-# anything is pushed or published.
+# anything is pushed or published, and so are the commit messages since the
+# last tag. The internal-name list is the DN_NAME_CHECK_WORDS organisation
+# secret; without it the check fails and nothing is released.
 #
 # Auto-release bynn-decisionnode on every push to main: bump the patch in
 # pyproject.toml, _version.py and uv.lock, run the tests, build, publish to
@@ -63,7 +65,9 @@ jobs:
       - run: pytest tests --ignore=tests/conformance
 
       - run: python -m build
-      - run: python .github/scripts/check_names.py dist/
+      - run: python .github/scripts/check_names.py --commits dist/
+        env:
+          DN_NAME_CHECK_WORDS: ${{ secrets.DN_NAME_CHECK_WORDS }}
 
       - run: |
           git add pyproject.toml src/decisionnode/_version.py uv.lock
