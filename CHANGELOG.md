@@ -97,6 +97,12 @@ Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`).
 - An image id of more than 64 characters is refused before anything is sent:
   `BadRequestError` `api_usage_error`, "Image <n>: its id is longer than 64 characters."
 
+### Removed
+
+- `Batch.price_factor`. The API does not send it: the batch price is each model's
+  `batch_price_factor` in `models()` (none on a fine-tuned model), and each line's charge
+  is in its usage.
+
 ## [0.2.0] - Unreleased
 
 Implements version 1.2 of the SDK specification (`SPEC_VERSION` is `"1.2"`) and passes

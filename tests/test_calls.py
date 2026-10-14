@@ -38,7 +38,6 @@ BATCH = {
     "ended_at": None,
     "results_url": None,
     "results_expire_at": None,
-    "price_factor": 0.5,
     "usage": {"input_tokens": 0, "output_tokens": 0},
     "error": None,
 }

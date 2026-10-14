@@ -532,9 +532,11 @@ the async client the feed may be an async iterator and `on_reply` a coroutine fu
 ## Batches
 
 The Batch API answers many decide requests at the batch price: 50% off the live price on
-`decisionnode-flash`, 30% off on `decisionnode-moe` (each model's `batch_price_factor` in
-`models()`, 0.5 and 0.7). There is no set time at which a batch runs or finishes, so poll
-for it. Requests not answered within 24 hours of finalizing expire and are not charged.
+`decisionnode-flash`, 30% off on `decisionnode-moe`. The batch price is each model's, its
+`batch_price_factor` in `models()` (0.5 and 0.7; a fine-tuned model's entry states none),
+never the batch's, and each line's charge is in its usage. There is no set time at which a
+batch runs or finishes, so poll for it. Requests not answered within 24 hours of finalizing
+expire and are not charged.
 
 ```python
 requests = [
@@ -587,8 +589,9 @@ for m in dn.models():
 ```
 
 Each entry is a `ModelInfo`. `limits` holds every other field the model publishes: the
-token limit, the number grid limits, the upload limits, and the `sessions` and `batch`
-objects.
+prices (`price_per_million_input`, `price_per_million_output`, `price_per_million_image`,
+`price_per_million_video`, in USD per million tokens, and `batch_price_factor`), the token
+limit, the number grid limits, the upload limits, and the `sessions` and `batch` objects.
 
 | Model | |
 |---|---|
@@ -931,7 +934,7 @@ The tests include the DecisionNode SDK conformance suite
 (`Bynn-Intelligence/decision-node-conformance`), run with both the sync and the async
 client. Set `DECISIONNODE_CONFORMANCE_DIR` to a checkout of it, or check it out at
 `conformance/` in this repository; without it the conformance tests fail rather than
-skip. The tests pass suite 1.16; CI checks the suite out at the commit pinned in
+skip. The tests pass suite 1.17; CI checks the suite out at the commit pinned in
 `CONFORMANCE_REF` in `.github/workflows/ci.yml`, with every action pinned to a commit SHA
 and no checkout keeping its credentials.
 

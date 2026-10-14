@@ -44,6 +44,9 @@ NDJSON = "application/x-ndjson"
 class Batch:
     """A batch: every field of the API's batch object.
 
+    A batch states no price: the batch price is each model's ``batch_price_factor`` in
+    ``models()``, and each line's charge is in its usage.
+
     Attributes:
         id: ``batch_`` and 10 characters.
         state: ``draft``, ``queued``, ``running``, ``completed``, ``failed``,
@@ -53,7 +56,6 @@ class Batch:
         created_at, finalized_at, expires_at, ended_at, results_expire_at: ISO 8601 UTC
             times, or ``None``.
         results_url: Where the results are, once the batch has ended.
-        price_factor: The share of the live price a line costs.
         usage: ``input_tokens`` and ``output_tokens`` of the lines answered so far.
         error: For a ``failed`` batch, ``error_type`` and ``message``.
         raw: The batch object as received.
@@ -68,7 +70,6 @@ class Batch:
     ended_at: Optional[str]
     results_url: Optional[str]
     results_expire_at: Optional[str]
-    price_factor: Optional[float]
     usage: Dict[str, Any]
     error: Optional[Dict[str, Any]]
     raw: Dict[str, Any] = field(repr=False)
@@ -143,7 +144,6 @@ def parse_batch(body: Any) -> Batch:
         ended_at=raw.get("ended_at"),
         results_url=raw.get("results_url"),
         results_expire_at=raw.get("results_expire_at"),
-        price_factor=raw.get("price_factor"),
         usage=dict(usage) if isinstance(usage, Mapping) else {},
         error=dict(error) if isinstance(error, Mapping) else None,
         raw=raw,

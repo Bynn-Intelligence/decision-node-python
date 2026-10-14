@@ -185,9 +185,17 @@ def same(a: Any, b: Any) -> bool:
     return type(a) is type(b) and a == b
 
 
+# An expected value meaning the key must not be there at all (suite 1.17).
+ABSENT = {"$absent": True}
+
+
 def match(expected: Any, actual: Any, path: str) -> None:
     if isinstance(expected, dict) and isinstance(actual, dict) and not is_pattern(expected):
         for k, v in expected.items():
+            if v == ABSENT:
+                if k in actual:
+                    raise Fail("%s.%s: expected no such key, got %s" % (path, k, short(actual[k])))
+                continue
             if k not in actual:
                 raise Fail("%s.%s: missing (expected %s)" % (path, k, short(v)))
             if k in EXACT:
@@ -200,6 +208,14 @@ def match(expected: Any, actual: Any, path: str) -> None:
         return
     if not same(expected, actual):
         raise Fail("%s: expected %s, got %s" % (path, short(expected), short(actual)))
+
+
+def match_batch(expected: Any, batch: Any, path: str) -> None:
+    """A batch compares as sent; a key expected absent is neither sent nor a field of Batch."""
+    match(expected, batch.raw, path)
+    for k, v in expected.items() if isinstance(expected, dict) else ():
+        if v == ABSENT and hasattr(batch, k):
+            raise Fail("%s.%s: expected no such field on Batch, got %s" % (path, k, short(getattr(batch, k))))
 
 
 def pointer(doc: Any, ptr: str) -> Tuple[bool, Any]:
@@ -761,7 +777,7 @@ def check_outcome(spec: Dict[str, Any], result: Any, path: str) -> None:
     elif kind == "batch":
         if not isinstance(result, dn.Batch):
             raise Fail("%s: expected a Batch, got %r" % (path, result))
-        match(spec.get("batch", {}), result.raw, path + ".batch")
+        match_batch(spec.get("batch", {}), result, path + ".batch")
     elif kind == "batch_page":
         if not isinstance(result, dn.BatchPage):
             raise Fail("%s: expected a BatchPage, got %r" % (path, result))
@@ -771,7 +787,7 @@ def check_outcome(spec: Dict[str, Any], result: Any, path: str) -> None:
     elif kind == "batch_run":
         if not isinstance(result, dn.BatchRun):
             raise Fail("%s: expected a BatchRun, got %r" % (path, result))
-        match(spec.get("batch", {}), result.batch.raw, path + ".batch")
+        match_batch(spec.get("batch", {}), result.batch, path + ".batch")
         check_results_spec(spec, result.results, path)
     elif kind in COLLECTION_KINDS:
         check_collection_result(kind, spec.get(kind, {}), result, path + "." + kind)
@@ -1068,7 +1084,7 @@ async def run_response(case: Dict[str, Any], mock: Mock, mode: str, env: pytest.
             raise Fail("raw: expected %s, got %s" % (short(exp["raw"]), short(result)))
     elif "batch" in exp:
         assert isinstance(result, dn.Batch)
-        match(exp["batch"], result.raw, "batch")
+        match_batch(exp["batch"], result, "batch")
     elif "batch_page" in exp:
         assert isinstance(result, dn.BatchPage)
         match(exp["batch_page"], result.raw, "batch_page")
