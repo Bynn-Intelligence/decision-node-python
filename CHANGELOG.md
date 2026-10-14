@@ -4,9 +4,67 @@ All notable changes to this package are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [0.3.0] - Unreleased
+## [0.3.3] - 2026-10-14
 
-Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`).
+Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`) and passes
+conformance suite 1.19.
+
+### Added
+
+- Device keys, as `dn.keys`, for a Manage device keys key: `create` (a Decisions-only key
+  and its secret, with an `Idempotency-Key`: the caller's `idempotency_key`, else a new one
+  per call, the same on every attempt; retried also while the first attempt runs), `list`
+  and `all` (by labels, `device_id` and `status`, a page of 1 to 200), `update`
+  (only the fields given; `None` clears `labels`, `limits`, `daily_spend_cap` or
+  `expires_at`), `revoke` and `revoke_by_labels` (with `device_ids` and `dry_run`). Each
+  returns the API's object as sent. A malformed `idempotency_key`, a label filter, a
+  `device_id`, a `status`, a `limit` and an update with nothing to change are refused
+  before sending with the API's messages.
+- Per-key usage, as `dn.usage`: `key` (`GET /v1/keys/{key_id}/usage`), `list`
+  (`GET /v1/usage`, one page) and `all` (every page, `next_cursor` followed until it is
+  `None`). Each returns the API's object as sent and retries as any read. The query's
+  rules (`granularity`, `group_by`, labels, `device_id`, key ids and at most 100 of them,
+  `scope`, `status`, `include_empty`, `limit`) are checked before sending with the API's
+  messages.
+- `FaceRecognitionReading.collection_name`, and on each `FaceMatch` its `collection_name`
+  and the item's `metadata` (an object as sent), each `None` when absent, never `{}`. A
+  `collection_name` that is not a text or a `metadata` that is not an object makes the
+  reading an `UnknownReading`.
+- An item's `metadata`: `enroll` takes it, an object of up to 20 keys (1 to 40 of `a-z`,
+  `0-9` and `_`) whose values are texts of up to 500 characters, numbers or booleans,
+  checked before sending as the API checks it.
+- `collections.update_item(collection_id, item_id, reference, label, metadata)`: a `PATCH`
+  sending only the fields given (`label=None` clears the label, `metadata` replaces the
+  whole object), with an `Idempotency-Key` and the retries of `enroll`; with no field it
+  raises the API's `ValidationError` before sending.
+- `collections.list_items` takes `reference` or `reference_prefix` (not both), each checked
+  as the API checks it.
+- `DecisionNodeError.details`: the error body's `detail.details` when it is an object, else
+  `None`. A 529 whose `details.reason` is `enrollment_unpriced` is never retried.
+- `ModelInfo.price_per_million_input`, `price_per_million_output`,
+  `price_per_million_image`, `price_per_million_video` and `batch_price_factor`: the
+  entry's prices as sent, each `None` when it states none (a fine-tuned model states no
+  `batch_price_factor`). `limits` and `raw` keep them too.
+
+### Changed
+
+- A 429 `key_spend_cap_reached` (a key past its daily spend cap) is raised at once and
+  never retried: the cap resets at 00:00 UTC. It stays a `RateLimitError` with `details`
+  `resets_at`, `cap` and `spent`.
+- The README documents the key kinds, a publishable key's `403` `origin_not_allowed` and
+  `model_not_allowed` (with `details["allowed"]`), and its `429`s with `details["reason"]`
+  `client_rate` and `in_flight`, retried as every 429.
+
+### Removed
+
+- `Batch.price_factor`. The API does not send it: the batch price is each model's
+  `batch_price_factor` in `models()` (none on a fine-tuned model), and each line's charge
+  is in its usage.
+
+## [0.3.2] - 2026-10-13
+
+Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`). First
+published as 0.3.1 the same day.
 
 ### Added
 
@@ -35,10 +93,6 @@ Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`).
   `FaceMatch` with a `FaceBox`, a `score`, the `collection` searched, the item's
   `reference`, and `name` or `label`, `None` when absent). Box corners are kept as
   received. A malformed reading is an `UnknownReading`.
-- `FaceRecognitionReading.collection_name`, and on each `FaceMatch` its `collection_name`
-  and the item's `metadata` (an object as sent), each `None` when absent, never `{}`. A
-  `collection_name` that is not a text or a `metadata` that is not an object makes the
-  reading an `UnknownReading`.
 - Collections of faces, as `dn.collections`: `create`, `list`, `get`, `delete`, `enroll`
   (one face from one image, sent as a decision's image is), `list_items` and
   `delete_item`, each returning the API's object as sent. `create` and `enroll` send an
@@ -49,17 +103,6 @@ Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`).
   collection's type and name, an item's reference and label and the items list's `offset`
   and `limit` are checked before anything is sent; of the picture only a URL's rules are,
   every other fault is the API's 422 `image_unreadable`.
-- An item's `metadata`: `enroll` takes it, an object of up to 20 keys (1 to 40 of `a-z`,
-  `0-9` and `_`) whose values are texts of up to 500 characters, numbers or booleans,
-  checked before sending as the API checks it.
-- `collections.update_item(collection_id, item_id, reference, label, metadata)`: a `PATCH`
-  sending only the fields given (`label=None` clears the label, `metadata` replaces the
-  whole object), with an `Idempotency-Key` and the retries of `enroll`; with no field it
-  raises the API's `ValidationError` before sending.
-- `collections.list_items` takes `reference` or `reference_prefix` (not both), each checked
-  as the API checks it.
-- `DecisionNodeError.details`: the error body's `detail.details` when it is an object, else
-  `None`. A 529 whose `details.reason` is `enrollment_unpriced` is never retried.
 - A decision whose boosters name `ocr` waits 30 seconds per attempt unless a `timeout` was
   set on the client, and is never retried after a timeout, since the server finishes that
   attempt and may bill it; its other retries stay.
@@ -80,10 +123,6 @@ Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`).
   is a `Fallback` (`served_model`, `requested_model`) on an answer from another model than
   the one asked for, read from `x-decisionnode-fallback` and
   `x-decisionnode-requested-model`; `None` otherwise.
-- `ModelInfo.price_per_million_input`, `price_per_million_output`,
-  `price_per_million_image`, `price_per_million_video` and `batch_price_factor`: the
-  entry's prices as sent, each `None` when it states none (a fine-tuned model states no
-  `batch_price_factor`). `limits` and `raw` keep them too.
 
 ### Changed
 
@@ -100,12 +139,6 @@ Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`).
   the request id when sent. The page is never read: `body` is `None`.
 - An image id of more than 64 characters is refused before anything is sent:
   `BadRequestError` `api_usage_error`, "Image <n>: its id is longer than 64 characters."
-
-### Removed
-
-- `Batch.price_factor`. The API does not send it: the batch price is each model's
-  `batch_price_factor` in `models()` (none on a fine-tuned model), and each line's charge
-  is in its usage.
 
 ## [0.2.0] - Unreleased
 

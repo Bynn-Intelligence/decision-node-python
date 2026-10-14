@@ -21,6 +21,11 @@ or `uv add bynn-decisionnode`. Python 3.10 or later.
 export DECISIONNODE_API_KEY="your-api-key"
 ```
 
+A key's kind decides what it may call: Full access for your servers, Decisions only for a
+device or a service that only decides, Manage device keys for the server that hands out
+device keys, and Publishable for a web page or an app. See
+[API keys](https://decisionnode.com/docs/concepts/keys).
+
 ## Quickstart
 
 ```python
@@ -684,6 +689,82 @@ whose values are texts of up to 500 characters, numbers or `True`/`False`. These
 before anything is sent. `create`, `enroll` and `update_item` send an `Idempotency-Key`, the
 same on every attempt of a call, so a retried call creates, enrolls or edits once.
 
+## Device keys
+
+A Manage device keys key, kept on your provisioning server, makes a Decisions-only key for
+each device as it enrolls, and changes or revokes it later. Every call returns the API's
+object as sent.
+
+```python
+import os
+
+admin = DecisionNode(api_key=os.environ["DECISIONNODE_MANAGE_KEY"])
+
+created = admin.keys.create(
+    "Kiosk 0412",
+    device_id="kiosk-0412",
+    labels={"store": "118", "fw": "2.4"},
+    limits={"requests_per_second": 5, "tokens_per_second": 20000},
+    daily_spend_cap={"usd": 2.0},
+    idempotency_key="enroll-kiosk-0412",  # a retried enrollment gets the same key back
+)
+secret = created["secret"]  # hand it to the device once; never log it
+
+admin.keys.update(created["key"]["id"], labels={"store": "120"})
+while admin.keys.revoke_by_labels({"store": "118"})["more"]:
+    pass
+```
+
+| Call | |
+|---|---|
+| `create(name, device_id=None, labels=None, limits=None, daily_spend_cap=None, expires_at=None, may_search_collections=None, idempotency_key=None)` | A Decisions-only key: `{key, secret}`, the secret shown only here. Each field is sent only when given |
+| `list(labels=None, device_id=None, status=None, limit=None, cursor=None)` | A page of keys, newest first: `{items, next_cursor}`. `labels` keeps the keys with all of them; `status` is `active` (the default), `expired`, `revoked` or `all`; `limit` 1 to 200 |
+| `all(labels=None, device_id=None, status=None, limit=None)` | Every key `list` finds, its pages followed to the end |
+| `update(key_id, name=..., labels=..., limits=..., daily_spend_cap=..., expires_at=..., may_search_collections=...)` | Sends only the fields given: `labels` replaces the whole set, and `None` clears `labels`, `limits`, `daily_spend_cap` or `expires_at`. A key's `device_id` never changes |
+| `revoke(key_id)` | Revokes one key, at once |
+| `revoke_by_labels(labels, device_ids=None, dry_run=None)` | Revokes every active key with all of `labels`, at most 10,000 a call: `{revoked, more}`; call again while `more` is true. `dry_run=True` counts them instead: `{would_revoke, more}` |
+
+`create` sends an `Idempotency-Key`: yours when you pass one (one per enrollment), else a
+new one per call, the same on every attempt, so a retried call makes one key. A retry
+with the same key and body within 24 hours returns the same key and secret. A label
+filter, a `device_id`, a `status` and a `limit` are checked before anything is sent, as
+the API checks them. The whole flow is in
+[Keys on devices](https://decisionnode.com/docs/patterns/device-keys).
+
+## Per-key usage
+
+What each key used and cost over a period: a Full access key reads every key of its
+workspace, a Manage device keys key its Decisions-only keys. Every call returns the API's
+object as sent.
+
+```python
+one = dn.usage.key("key_7c2e9a41b0d34f6e8a5c1d2b3e4f5a60", granularity="day")
+items = dn.usage.all(
+    "2026-10-01T00:00:00Z",
+    "2026-11-01T00:00:00Z",
+    labels={"customer": "acme"},
+    status="all",
+)
+for item in items:
+    print(item["key"]["name"], item["totals"]["cost"]["usd"])
+```
+
+| Call | |
+|---|---|
+| `key(key_id, start=None, end=None, granularity=None, group_by=None)` | One key's usage; without `start` and `end`, the UTC month so far |
+| `list(start, end, granularity=None, group_by=None, labels=None, device_id=None, key_ids=None, scope=None, status=None, include_empty=None, limit=None, cursor=None)` | One page of every key's usage: `{period, as_of, items, next_cursor}`; pass `next_cursor` as `cursor` until it is `None` |
+| `all(start, end, ...)` | `list`'s arguments but `cursor`: every page's `items`, in order |
+
+`start` and `end` are RFC 3339 times, rounded to the hour. `granularity` (`none`, `hour`,
+`day` or `month`) adds `buckets`, and `group_by` (`model` or `channel`) `by_model` or
+`by_channel`. `labels` keeps the keys with all of them, `key_ids` (at most 100) the keys
+named, `scope` (`full`, `decide` or `keys`) and `status` (`active`, `expired`, `revoked` or
+`all`) the keys of that kind or state; `include_empty=True` lists keys with no usage too;
+`limit` is 1 to 1,000. A page can hold fewer keys than `limit`, so only `next_cursor` says
+when the list is done: `all` follows it for you. These query rules are checked before
+anything is sent, with the API's messages; the period's own rules are the server's. See
+[Usage](https://decisionnode.com/docs/api/usage).
+
 ## Errors
 
 Every error derives from `DecisionNodeError`, with `status`, `error_type`, `request_id`,
@@ -700,11 +781,11 @@ server sent none, never `None`), or the client's description when no response ar
 | 401 | `AuthenticationError` (also raised before sending when no key is set) | |
 | 402 | `InsufficientCreditError` | |
 | 403 | `RefusalError`: refused under the usage policy | `category`, `safety` |
-| 403, not a refusal | `PermissionDeniedError`: your workspace may not do this, for example use a booster that is turned off for it | |
+| 403, not a refusal | `PermissionDeniedError`: your workspace or your key may not do this, for example use a booster that is turned off for it, or a call outside the key's kind (`key_scope_denied`); for a publishable key also `origin_not_allowed` and `model_not_allowed`, its models in `details["allowed"]` | |
 | 404 | `NotFoundError` | |
 | 413 | `RequestTooLargeError`: the body is over 25 MiB; never retried (also raised before sending) | |
 | 422 | `ValidationError` | `entries` |
-| 429 | `RateLimitError`; `SessionLimitError` for too many open sessions | `retry_after` (seconds) |
+| 429 | `RateLimitError`; `SessionLimitError` for too many open sessions; `error_type` `key_spend_cap_reached` for a key past its daily spend cap, with `details` `resets_at`, `cap` and `spent`; a publishable key's per-address rate and calls in flight with `details["reason"]` `client_rate` or `in_flight` | `retry_after` (seconds) |
 | 529 | `OverloadedError`, also when a required booster failed (`error_type` `booster_unavailable`) | `retry_after` (seconds) |
 | other 5xx, a 2xx whose body is not JSON, or a helper's own answer missing or malformed | `ServerError` | |
 | 3xx and every other status | `DecisionNodeError` itself, with `status` | |
@@ -831,7 +912,8 @@ when the server sends it, else `Retry-After` in seconds or as an HTTP date, capp
 60 seconds either way; without either, an exponential backoff from 0.5 seconds with
 jitter, capped at 8 seconds. A 408 still failing after its retries raises
 `DecisionNodeError` with `status` 408. 400, 401, 402, 403, 404 and
-422 are never retried: the same request would fail again. A decision changes nothing on
+422 are never retried: the same request would fail again. Nor is a 429
+`key_spend_cap_reached`: the key's cap resets at 00:00 UTC, so it is raised at once. A decision changes nothing on
 the server, so a retry is always safe.
 
 ```python
@@ -936,7 +1018,7 @@ The tests include the DecisionNode SDK conformance suite
 (`Bynn-Intelligence/decision-node-conformance`), run with both the sync and the async
 client. Set `DECISIONNODE_CONFORMANCE_DIR` to a checkout of it, or check it out at
 `conformance/` in this repository; without it the conformance tests fail rather than
-skip. The tests pass suite 1.17; CI checks the suite out at the commit pinned in
+skip. The tests pass suite 1.19; CI checks the suite out at the commit pinned in
 `CONFORMANCE_REF` in `.github/workflows/ci.yml`, with every action pinned to a commit SHA
 and no checkout keeping its credentials.
 

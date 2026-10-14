@@ -73,6 +73,19 @@ METADATA_KEYS = 20
 METADATA_KEY_CHARS = 40
 METADATA_KEY_PATTERN = "[a-z0-9_]{1,40}"
 METADATA_TEXT_CHARS = 500
+# Per-key usage and /v1/keys: the query and header rules the API checks as it reads them.
+USAGE_GRANULARITIES = ("none", "hour", "day", "month")
+USAGE_GROUPS = ("model", "channel")
+KEY_SCOPES = ("full", "decide", "keys")
+KEY_STATUSES = ("active", "expired", "revoked", "all")
+USAGE_LIMIT_MAX = 1000
+KEYS_LIMIT_MAX = 200
+MAX_KEY_ID_FILTERS = 100
+KEY_ID_PATTERN = "key_[0-9a-f]{32}"
+LABEL_NAME_PATTERN = "[a-z0-9_.-]{1,32}"
+LABEL_VALUE_CHARS = 64
+DEVICE_ID_CHARS = 128
+IDEMPOTENCY_KEY_CHARS = 255
 UNITS = ("pixels", "normalized")
 Entry = Tuple[Dict[str, Any], Optional[str]]
 Limits = Mapping[str, Any]
@@ -1018,3 +1031,129 @@ def _printable(value: str, most: int) -> str:
     but printable ASCII written as ``\\u{hex}``, then "..." when it was longer."""
     out = "".join(c if 0x20 <= ord(c) <= 0x7E else "\\u{%x}" % ord(c) for c in value[:most])
     return out + ("..." if len(value) > most else "")
+
+
+Query = List[Tuple[str, Any]]
+
+
+def usage_period(start: Any, end: Any, granularity: Any, group_by: Any) -> Query:
+    """A usage read's period and its breakdowns, each sent only when given."""
+    if granularity is not None and granularity not in USAGE_GRANULARITIES:
+        raise usage_error("granularity is none, hour, day or month.")
+    if group_by is not None and group_by not in USAGE_GROUPS:
+        raise usage_error("group_by is model or channel.")
+    return [
+        (name, value)
+        for name, value in (("start", start), ("end", end), ("granularity", granularity), ("group_by", group_by))
+        if value is not None
+    ]
+
+
+def _label_filters(labels: Any) -> Query:
+    """Each label as ``label=name:value``, sorted by name, so a mapping sends the same
+    query every time."""
+    if labels is None:
+        return []
+    if not isinstance(labels, Mapping):
+        raise ValueError("labels must be a mapping of label names to values, got %r" % (labels,))
+    out: Query = []
+    for name, value in sorted(labels.items(), key=lambda kv: str(kv[0])):
+        if (
+            not isinstance(name, str)
+            or not re.fullmatch(LABEL_NAME_PATTERN, name)
+            or not isinstance(value, str)
+            or not 1 <= len(value) <= LABEL_VALUE_CHARS
+            or any(unicodedata.category(c) == "Cc" for c in value)
+        ):
+            raise usage_error("A label filter is name:value, as labels are written.")
+        out.append(("label", "%s:%s" % (name, value)))
+    return out
+
+
+def _device_filter(device_id: Any) -> Query:
+    if device_id is None:
+        return []
+    if (
+        not isinstance(device_id, str)
+        or not 1 <= len(device_id) <= DEVICE_ID_CHARS
+        or not all(0x20 <= ord(c) <= 0x7E for c in device_id)
+        or device_id.startswith(" ")
+    ):
+        raise usage_error("device_id is 1 to 128 printable ASCII characters, not starting with a space.")
+    return [("device_id", device_id)]
+
+
+def _status_filter(status: Any) -> Query:
+    if status is None:
+        return []
+    if status not in KEY_STATUSES:
+        raise usage_error("status is active, expired, revoked or all.")
+    return [("status", status)]
+
+
+def _page(limit: Any, most: int, cursor: Any) -> Query:
+    out: Query = []
+    if limit is not None:
+        if not _is_int(limit) or not 1 <= limit <= most:
+            raise usage_error("limit is a whole number from 1 to %d." % most)
+        out.append(("limit", limit))
+    if cursor is not None:
+        out.append(("cursor", cursor))
+    return out
+
+
+def usage_list_query(
+    start: Any,
+    end: Any,
+    granularity: Any,
+    group_by: Any,
+    labels: Any,
+    device_id: Any,
+    key_ids: Any,
+    scope: Any,
+    status: Any,
+    include_empty: Any,
+    limit: Any,
+    cursor: Any,
+) -> Query:
+    """``GET /v1/usage``'s query, checked in the API's order; the period's own rules and
+    the cursor are the server's."""
+    query = usage_period(start, end, granularity, group_by)
+    query += _label_filters(labels)
+    query += _device_filter(device_id)
+    for i, key_id in enumerate(key_ids or ()):
+        if not isinstance(key_id, str) or not re.fullmatch(KEY_ID_PATTERN, key_id):
+            raise usage_error("key_id is a key's id, key_ and 32 hex digits.")
+        if i == MAX_KEY_ID_FILTERS:
+            raise usage_error("At most 100 key_id filters.")
+        query.append(("key_id", key_id))
+    if scope is not None:
+        if scope not in KEY_SCOPES:
+            raise usage_error("scope is full, decide or keys.")
+        query.append(("scope", scope))
+    query += _status_filter(status)
+    if include_empty is not None:
+        if not isinstance(include_empty, bool):
+            raise usage_error("include_empty is true or false.")
+        query.append(("include_empty", "true" if include_empty else "false"))
+    return query + _page(limit, USAGE_LIMIT_MAX, cursor)
+
+
+def keys_list_query(labels: Any, device_id: Any, status: Any, limit: Any, cursor: Any) -> Query:
+    """``GET /v1/keys``'s query, checked as the API reads it; the cursor is the server's."""
+    return (
+        _label_filters(labels)
+        + _device_filter(device_id)
+        + _status_filter(status)
+        + _page(limit, KEYS_LIMIT_MAX, cursor)
+    )
+
+
+def check_idempotency_key(key: Any) -> None:
+    """A caller's own ``Idempotency-Key``: 1 to 255 printable ASCII characters."""
+    if (
+        not isinstance(key, str)
+        or not 1 <= len(key) <= IDEMPOTENCY_KEY_CHARS
+        or not all(0x20 <= ord(c) <= 0x7E for c in key)
+    ):
+        raise usage_error("Idempotency-Key must be sent once, as 1 to 255 printable ASCII characters.")

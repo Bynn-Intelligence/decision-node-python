@@ -664,6 +664,9 @@ async def invoke(client: Any, mode: str, call: Dict[str, Any], ctx: Dict[str, An
         return result
     if method.startswith("collections."):
         return await settle(getattr(client.collections, method.split(".", 1)[1])(**a))
+    if method.startswith("usage."):
+        # Suite 1.18: key, list, all.
+        return await settle(getattr(client.usage, method.split(".", 1)[1])(**a))
     if method.startswith("batches."):
         result = await settle(getattr(client.batches, method.split(".", 1)[1])(**a))
         if method == "batches.results":
@@ -750,16 +753,27 @@ async def close_client(client: Any) -> None:
 # --------------------------------------------------------------------------- outcomes
 
 
-# The collections calls' results, each the API's object as sent; collections is the list.
-COLLECTION_KINDS = ("collection", "collections", "item", "item_page", "deleted")
+# The collections and usage calls' results, each the API's object as sent; collections
+# and usage_items are lists.
+COLLECTION_KINDS = (
+    "collection",
+    "collections",
+    "item",
+    "item_page",
+    "deleted",
+    "key_usage",
+    "usage_page",
+    "usage_items",
+)
+LIST_KINDS = ("collections", "usage_items")
 
 
 def check_collection_result(kind: str, expected: Any, result: Any, path: str) -> None:
-    if kind == "collections":
+    if kind in LIST_KINDS:
         if not isinstance(result, list):
-            raise Fail("%s: expected a list of collections, got %s" % (path, type(result).__name__))
+            raise Fail("%s: expected a list, got %s" % (path, type(result).__name__))
         if len(expected) != len(result):
-            raise Fail("%s: expected %d collections, got %d" % (path, len(expected), len(result)))
+            raise Fail("%s: expected %d entries, got %d" % (path, len(expected), len(result)))
         for i, (e, r) in enumerate(zip(expected, result)):
             match(e, r, "%s[%d]" % (path, i))
         return
@@ -880,6 +894,11 @@ def check_request(exp: Dict[str, Any], got: Dict[str, Any], where: str) -> None:
         query = {k: v[0] for k, v in parse_qs(got.get("query") or "", keep_blank_values=True).items()}
         if query != exp["query"]:
             raise Fail("%s query: expected %s, got %s" % (where, exp["query"], query))
+    if "query_all" in exp:
+        # Suite 1.18: every value of each parameter, a repeated one in its order.
+        every = parse_qs(got.get("query") or "", keep_blank_values=True)
+        if every != exp["query_all"]:
+            raise Fail("%s query: expected %s, got %s" % (where, exp["query_all"], every))
     if "status" in exp and got.get("status") != exp["status"]:
         raise Fail("%s status: the mock answered %s, expected %s" % (where, got.get("status"), exp["status"]))
     headers = got["headers"]
@@ -982,7 +1001,7 @@ def check_sequence(expected: List[Dict[str, Any]], log: List[Dict[str, Any]]) ->
     if len(expected) != len(log):
         raise Fail("request sequence: expected %d requests, the mock received %d: %s" % (len(expected), len(log), got))
     names = ("headers", "header_patterns", "absent_headers", "body_checks", "jsonl_count", "jsonl_checks")
-    names += ("body_base64", "body_sha256", "query")
+    names += ("body_base64", "body_sha256", "query", "query_all")
     for i, (spec, rec) in enumerate(zip(expected, log)):
         if rec["method"] != spec["method"]:
             raise Fail("request sequence[%d]: expected %s, got %s" % (i, spec["method"], got[i]))

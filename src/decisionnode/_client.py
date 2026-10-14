@@ -95,6 +95,7 @@ from ._validate import (
     check_collection,
     check_enroll_image,
     check_frame,
+    check_idempotency_key,
     check_images,
     check_item,
     check_item_update,
@@ -104,7 +105,10 @@ from ._validate import (
     check_request,
     check_session_open,
     count_entries,
+    keys_list_query,
     usage_error,
+    usage_list_query,
+    usage_period,
 )
 from ._videos import VideoInput, check_videos, video_list
 
@@ -329,6 +333,71 @@ def _item_update(reference: Any, label: Any, metadata: Any) -> bytes:
         if value is not UNSET:
             body[name] = value
     return _base.encode(body)
+
+
+# A request's query: a mapping, or name and value pairs where a name repeats.
+Query = Union[Mapping[str, Any], Sequence[Tuple[str, Any]]]
+
+
+def _key_path(key_id: Any, suffix: str = "") -> str:
+    if not isinstance(key_id, str) or not key_id:
+        raise ValueError("key_id must be a key id such as key_7c2e..., got %r" % (key_id,))
+    return "%s/%s%s" % (_base.KEYS_PATH, quote(key_id, safe=""), suffix)
+
+
+def _key_create(
+    name: Any,
+    device_id: Any,
+    labels: Any,
+    limits: Any,
+    daily_spend_cap: Any,
+    expires_at: Any,
+    may_search_collections: Any,
+    idempotency_key: Any,
+) -> Tuple[bytes, Dict[str, str]]:
+    """A key's create body, with only the fields given, and its Idempotency-Key: the
+    caller's, else a new one."""
+    if idempotency_key is not None:
+        check_idempotency_key(idempotency_key)
+    body: Dict[str, Any] = {"name": name}
+    for field, value in (
+        ("device_id", device_id),
+        ("labels", labels),
+        ("limits", limits),
+        ("daily_spend_cap", daily_spend_cap),
+        ("expires_at", expires_at),
+        ("may_search_collections", may_search_collections),
+    ):
+        if value is not None:
+            body[field] = value
+    headers = _idempotency_key() if idempotency_key is None else {"Idempotency-Key": idempotency_key}
+    return _base.encode(body), headers
+
+
+def _key_update(fields: Mapping[str, Any]) -> bytes:
+    body = {name: value for name, value in fields.items() if value is not UNSET}
+    if not body:
+        raise usage_error("Nothing to change.")
+    return _base.encode(body)
+
+
+def _revoke_body(labels: Any, device_ids: Any, dry_run: Any) -> bytes:
+    body: Dict[str, Any] = {"labels": labels}
+    if device_ids is not None:
+        body["device_ids"] = list(device_ids)
+    if dry_run is not None:
+        body["dry_run"] = dry_run
+    return _base.encode(body)
+
+
+def _items_of(page: Any) -> List[Dict[str, Any]]:
+    found = page.get("items") if isinstance(page, Mapping) else None
+    return list(found) if isinstance(found, list) else []
+
+
+def _next_cursor(page: Any) -> Optional[str]:
+    cursor = page.get("next_cursor") if isinstance(page, Mapping) else None
+    return cursor if isinstance(cursor, str) and cursor else None
 
 
 def _list_query(offset: Any, limit: Any) -> Dict[str, int]:
@@ -752,7 +821,7 @@ def _http2_available() -> None:
         raise ValueError('http2=True needs the h2 package: pip install "bynn-decisionnode[http2]"') from None
 
 
-def _url(settings: Settings, path: str, query: Optional[Mapping[str, Any]]) -> str:
+def _url(settings: Settings, path: str, query: Optional[Query]) -> str:
     url = settings.url(path)
     if query:
         url += "?" + urlencode(query)
@@ -847,6 +916,8 @@ class DecisionNode(_Common):
         self._held = {}
         self.batches = Batches(self)
         self.collections = Collections(self)
+        self.usage = Usage(self)
+        self.keys = Keys(self)
 
     # ---- lifecycle
 
@@ -875,7 +946,7 @@ class DecisionNode(_Common):
         content: Optional[bytes],
         policy: str = DEFAULT,
         content_type: str = "application/json",
-        query: Optional[Mapping[str, Any]] = None,
+        query: Optional[Query] = None,
         timeout: Optional[float] = None,
         extra_headers: Optional[Mapping[str, str]] = None,
     ) -> _Response:
@@ -917,7 +988,7 @@ class DecisionNode(_Common):
         content: Optional[bytes],
         policy: str = DEFAULT,
         content_type: str = "application/json",
-        query: Optional[Mapping[str, Any]] = None,
+        query: Optional[Query] = None,
         extra_headers: Optional[Mapping[str, str]] = None,
     ) -> Tuple[int, Dict[str, str], Any]:
         status, headers, text = self._send(
@@ -1607,6 +1678,213 @@ class Collections:
         return cast(Dict[str, Any], body)
 
 
+class Usage:
+    """Per-key usage, as ``dn.usage``: what each key used and cost over a period. A Full
+    access key reads every key of its workspace, a Manage device keys key its Decisions-only
+    keys. Every call returns the API's object as sent and retries as any read."""
+
+    def __init__(self, client: DecisionNode) -> None:
+        self._client = client
+
+    def key(
+        self,
+        key_id: str,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+        granularity: Optional[str] = None,
+        group_by: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """One key's usage, ``GET /v1/keys/{key_id}/usage``. ``start`` and ``end`` are
+        RFC 3339 times, rounded to the hour by the API; left out, the UTC month so far.
+        ``granularity`` (``none``, ``hour``, ``day`` or ``month``) adds ``buckets``, and
+        ``group_by`` (``model`` or ``channel``) ``by_model`` or ``by_channel``."""
+        query = usage_period(start, end, granularity, group_by)
+        _, _, body = self._client._json("GET", _key_path(key_id, "/usage"), None, query=query)
+        return cast(Dict[str, Any], body)
+
+    def list(
+        self,
+        start: str,
+        end: str,
+        granularity: Optional[str] = None,
+        group_by: Optional[str] = None,
+        labels: Optional[Mapping[str, str]] = None,
+        device_id: Optional[str] = None,
+        key_ids: Optional[Sequence[str]] = None,
+        scope: Optional[str] = None,
+        status: Optional[str] = None,
+        include_empty: Optional[bool] = None,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """One page of every key's usage over a period, ``GET /v1/usage``: ``{period,
+        as_of, items, next_cursor}``. ``labels`` keeps the keys that have them all,
+        ``key_ids`` (at most 100) the keys named, ``scope`` (``full``, ``decide`` or
+        ``keys``) and ``status`` (``active``, ``expired``, ``revoked`` or ``all``) the
+        keys of that kind or state; ``include_empty`` lists keys with no usage too. Pass
+        ``next_cursor`` as ``cursor`` for the next page, until it is ``None``."""
+        query = usage_list_query(
+            start, end, granularity, group_by, labels, device_id, key_ids, scope, status, include_empty, limit, cursor
+        )
+        _, _, body = self._client._json("GET", _base.USAGE_PATH, None, query=query)
+        return cast(Dict[str, Any], body)
+
+    def all(
+        self,
+        start: str,
+        end: str,
+        granularity: Optional[str] = None,
+        group_by: Optional[str] = None,
+        labels: Optional[Mapping[str, str]] = None,
+        device_id: Optional[str] = None,
+        key_ids: Optional[Sequence[str]] = None,
+        scope: Optional[str] = None,
+        status: Optional[str] = None,
+        include_empty: Optional[bool] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Every key's usage over the period: ``list``'s pages, ``next_cursor`` followed
+        until it is ``None``, their ``items`` in order. A page can hold fewer keys than
+        ``limit``, so only the cursor says when the list is done."""
+        items: List[Dict[str, Any]] = []
+        cursor: Optional[str] = None
+        while True:
+            page = self.list(
+                start,
+                end,
+                granularity,
+                group_by,
+                labels,
+                device_id,
+                key_ids,
+                scope,
+                status,
+                include_empty,
+                limit,
+                cursor,
+            )
+            items.extend(_items_of(page))
+            cursor = _next_cursor(page)
+            if cursor is None:
+                return items
+
+
+class Keys:
+    """Decisions-only keys for devices, as ``dn.keys``, made, listed, changed and revoked
+    with a Manage device keys key. Every call returns the API's object as sent.
+
+    ``create`` sends an ``Idempotency-Key``: the one given (one per enrollment, so a
+    retried enrollment gets the same key and secret back), else a new one per call, the
+    same on every attempt of it. It retries like any call, and also while the API reports
+    the first attempt still running. The other calls retry as any call.
+    """
+
+    def __init__(self, client: DecisionNode) -> None:
+        self._client = client
+
+    def create(
+        self,
+        name: str,
+        device_id: Optional[str] = None,
+        labels: Optional[Mapping[str, str]] = None,
+        limits: Optional[Mapping[str, Any]] = None,
+        daily_spend_cap: Optional[Mapping[str, Any]] = None,
+        expires_at: Optional[str] = None,
+        may_search_collections: Optional[bool] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Make a Decisions-only key: ``{key, secret}``. The secret is shown in this
+        answer only (and again to a retry with the same ``idempotency_key`` within 24
+        hours); hand it to the device and never log it. Each field is sent only when
+        given."""
+        content, headers = _key_create(
+            name, device_id, labels, limits, daily_spend_cap, expires_at, may_search_collections, idempotency_key
+        )
+        _, _, body = self._client._json("POST", _base.KEYS_PATH, content, IDEMPOTENT, extra_headers=headers)
+        return cast(Dict[str, Any], body)
+
+    def list(
+        self,
+        labels: Optional[Mapping[str, str]] = None,
+        device_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """One page of the workspace's Decisions-only keys, newest first: ``{items,
+        next_cursor}``. ``labels`` keeps the keys that have them all, ``status`` is
+        ``active`` (the API's default), ``expired``, ``revoked`` or ``all``, and ``limit``
+        1 to 200. Pass ``next_cursor`` as ``cursor`` for the next page, until it is
+        ``None``."""
+        query = keys_list_query(labels, device_id, status, limit, cursor)
+        _, _, body = self._client._json("GET", _base.KEYS_PATH, None, query=query)
+        return cast(Dict[str, Any], body)
+
+    def all(
+        self,
+        labels: Optional[Mapping[str, str]] = None,
+        device_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Every key ``list`` finds: its pages, ``next_cursor`` followed until it is
+        ``None``, their ``items`` in order."""
+        items: List[Dict[str, Any]] = []
+        cursor: Optional[str] = None
+        while True:
+            page = self.list(labels, device_id, status, limit, cursor)
+            items.extend(_items_of(page))
+            cursor = _next_cursor(page)
+            if cursor is None:
+                return items
+
+    def update(
+        self,
+        key_id: str,
+        name: Any = UNSET,
+        labels: Any = UNSET,
+        limits: Any = UNSET,
+        daily_spend_cap: Any = UNSET,
+        expires_at: Any = UNSET,
+        may_search_collections: Any = UNSET,
+    ) -> Dict[str, Any]:
+        """Change a key, sending only the fields given: ``labels`` replaces the key's
+        whole set, and ``None`` clears ``labels``, ``limits``, ``daily_spend_cap`` or
+        ``expires_at``. A key's ``device_id`` never changes. Answers the key."""
+        content = _key_update(
+            {
+                "name": name,
+                "labels": labels,
+                "limits": limits,
+                "daily_spend_cap": daily_spend_cap,
+                "expires_at": expires_at,
+                "may_search_collections": may_search_collections,
+            }
+        )
+        _, _, body = self._client._json("PATCH", _key_path(key_id), content)
+        return cast(Dict[str, Any], body)
+
+    def revoke(self, key_id: str) -> Dict[str, Any]:
+        """Revoke a key, at once: ``{id, revoked}``. The next call with it gets a 401;
+        a revocation cannot be undone."""
+        _, _, body = self._client._json("DELETE", _key_path(key_id), None)
+        return cast(Dict[str, Any], body)
+
+    def revoke_by_labels(
+        self,
+        labels: Mapping[str, str],
+        device_ids: Optional[Sequence[str]] = None,
+        dry_run: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Revoke every active key that has all of ``labels`` (and, with ``device_ids``,
+        is one of those devices), at most 10,000 a call: ``{revoked, more}``. Call it
+        again while ``more`` is true. With ``dry_run=True`` it revokes nothing and
+        answers ``{would_revoke, more}``."""
+        content = _revoke_body(labels, device_ids, dry_run)
+        _, _, body = self._client._json("POST", _base.KEYS_PATH + "/revoke", content)
+        return cast(Dict[str, Any], body)
+
+
 class AsyncDecisionNode(_Common):
     """The DecisionNode client for asyncio. Same arguments and methods as :class:`DecisionNode`;
     every method is a coroutine.
@@ -1654,6 +1932,8 @@ class AsyncDecisionNode(_Common):
         self._held = {}
         self.batches = AsyncBatches(self)
         self.collections = AsyncCollections(self)
+        self.usage = AsyncUsage(self)
+        self.keys = AsyncKeys(self)
 
     # ---- lifecycle
 
@@ -1682,7 +1962,7 @@ class AsyncDecisionNode(_Common):
         content: Optional[bytes],
         policy: str = DEFAULT,
         content_type: str = "application/json",
-        query: Optional[Mapping[str, Any]] = None,
+        query: Optional[Query] = None,
         timeout: Optional[float] = None,
         extra_headers: Optional[Mapping[str, str]] = None,
     ) -> _Response:
@@ -1741,7 +2021,7 @@ class AsyncDecisionNode(_Common):
         content: Optional[bytes],
         policy: str = DEFAULT,
         content_type: str = "application/json",
-        query: Optional[Mapping[str, Any]] = None,
+        query: Optional[Query] = None,
         extra_headers: Optional[Mapping[str, str]] = None,
     ) -> Tuple[int, Dict[str, str], Any]:
         status, headers, text = await self._send(
@@ -2351,4 +2631,211 @@ class AsyncCollections:
     async def delete_item(self, collection_id: str, item_id: str) -> Dict[str, Any]:
         """Delete one item of a collection."""
         _, _, body = await self._client._json("DELETE", _item_path(collection_id, item_id), None)
+        return cast(Dict[str, Any], body)
+
+
+class AsyncUsage:
+    """Per-key usage, as ``dn.usage``: what each key used and cost over a period. A Full
+    access key reads every key of its workspace, a Manage device keys key its Decisions-only
+    keys. Every call returns the API's object as sent and retries as any read."""
+
+    def __init__(self, client: AsyncDecisionNode) -> None:
+        self._client = client
+
+    async def key(
+        self,
+        key_id: str,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+        granularity: Optional[str] = None,
+        group_by: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """One key's usage, ``GET /v1/keys/{key_id}/usage``. ``start`` and ``end`` are
+        RFC 3339 times, rounded to the hour by the API; left out, the UTC month so far.
+        ``granularity`` (``none``, ``hour``, ``day`` or ``month``) adds ``buckets``, and
+        ``group_by`` (``model`` or ``channel``) ``by_model`` or ``by_channel``."""
+        query = usage_period(start, end, granularity, group_by)
+        _, _, body = await self._client._json("GET", _key_path(key_id, "/usage"), None, query=query)
+        return cast(Dict[str, Any], body)
+
+    async def list(
+        self,
+        start: str,
+        end: str,
+        granularity: Optional[str] = None,
+        group_by: Optional[str] = None,
+        labels: Optional[Mapping[str, str]] = None,
+        device_id: Optional[str] = None,
+        key_ids: Optional[Sequence[str]] = None,
+        scope: Optional[str] = None,
+        status: Optional[str] = None,
+        include_empty: Optional[bool] = None,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """One page of every key's usage over a period, ``GET /v1/usage``: ``{period,
+        as_of, items, next_cursor}``. ``labels`` keeps the keys that have them all,
+        ``key_ids`` (at most 100) the keys named, ``scope`` (``full``, ``decide`` or
+        ``keys``) and ``status`` (``active``, ``expired``, ``revoked`` or ``all``) the
+        keys of that kind or state; ``include_empty`` lists keys with no usage too. Pass
+        ``next_cursor`` as ``cursor`` for the next page, until it is ``None``."""
+        query = usage_list_query(
+            start, end, granularity, group_by, labels, device_id, key_ids, scope, status, include_empty, limit, cursor
+        )
+        _, _, body = await self._client._json("GET", _base.USAGE_PATH, None, query=query)
+        return cast(Dict[str, Any], body)
+
+    async def all(
+        self,
+        start: str,
+        end: str,
+        granularity: Optional[str] = None,
+        group_by: Optional[str] = None,
+        labels: Optional[Mapping[str, str]] = None,
+        device_id: Optional[str] = None,
+        key_ids: Optional[Sequence[str]] = None,
+        scope: Optional[str] = None,
+        status: Optional[str] = None,
+        include_empty: Optional[bool] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Every key's usage over the period: ``list``'s pages, ``next_cursor`` followed
+        until it is ``None``, their ``items`` in order. A page can hold fewer keys than
+        ``limit``, so only the cursor says when the list is done."""
+        items: List[Dict[str, Any]] = []
+        cursor: Optional[str] = None
+        while True:
+            page = await self.list(
+                start,
+                end,
+                granularity,
+                group_by,
+                labels,
+                device_id,
+                key_ids,
+                scope,
+                status,
+                include_empty,
+                limit,
+                cursor,
+            )
+            items.extend(_items_of(page))
+            cursor = _next_cursor(page)
+            if cursor is None:
+                return items
+
+
+class AsyncKeys:
+    """Decisions-only keys for devices, as ``dn.keys``, made, listed, changed and revoked
+    with a Manage device keys key. Every call returns the API's object as sent.
+
+    ``create`` sends an ``Idempotency-Key``: the one given (one per enrollment, so a
+    retried enrollment gets the same key and secret back), else a new one per call, the
+    same on every attempt of it. It retries like any call, and also while the API reports
+    the first attempt still running. The other calls retry as any call.
+    """
+
+    def __init__(self, client: AsyncDecisionNode) -> None:
+        self._client = client
+
+    async def create(
+        self,
+        name: str,
+        device_id: Optional[str] = None,
+        labels: Optional[Mapping[str, str]] = None,
+        limits: Optional[Mapping[str, Any]] = None,
+        daily_spend_cap: Optional[Mapping[str, Any]] = None,
+        expires_at: Optional[str] = None,
+        may_search_collections: Optional[bool] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Make a Decisions-only key: ``{key, secret}``. The secret is shown in this
+        answer only (and again to a retry with the same ``idempotency_key`` within 24
+        hours); hand it to the device and never log it. Each field is sent only when
+        given."""
+        content, headers = _key_create(
+            name, device_id, labels, limits, daily_spend_cap, expires_at, may_search_collections, idempotency_key
+        )
+        _, _, body = await self._client._json("POST", _base.KEYS_PATH, content, IDEMPOTENT, extra_headers=headers)
+        return cast(Dict[str, Any], body)
+
+    async def list(
+        self,
+        labels: Optional[Mapping[str, str]] = None,
+        device_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """One page of the workspace's Decisions-only keys, newest first: ``{items,
+        next_cursor}``. ``labels`` keeps the keys that have them all, ``status`` is
+        ``active`` (the API's default), ``expired``, ``revoked`` or ``all``, and ``limit``
+        1 to 200. Pass ``next_cursor`` as ``cursor`` for the next page, until it is
+        ``None``."""
+        query = keys_list_query(labels, device_id, status, limit, cursor)
+        _, _, body = await self._client._json("GET", _base.KEYS_PATH, None, query=query)
+        return cast(Dict[str, Any], body)
+
+    async def all(
+        self,
+        labels: Optional[Mapping[str, str]] = None,
+        device_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Every key ``list`` finds: its pages, ``next_cursor`` followed until it is
+        ``None``, their ``items`` in order."""
+        items: List[Dict[str, Any]] = []
+        cursor: Optional[str] = None
+        while True:
+            page = await self.list(labels, device_id, status, limit, cursor)
+            items.extend(_items_of(page))
+            cursor = _next_cursor(page)
+            if cursor is None:
+                return items
+
+    async def update(
+        self,
+        key_id: str,
+        name: Any = UNSET,
+        labels: Any = UNSET,
+        limits: Any = UNSET,
+        daily_spend_cap: Any = UNSET,
+        expires_at: Any = UNSET,
+        may_search_collections: Any = UNSET,
+    ) -> Dict[str, Any]:
+        """Change a key, sending only the fields given: ``labels`` replaces the key's
+        whole set, and ``None`` clears ``labels``, ``limits``, ``daily_spend_cap`` or
+        ``expires_at``. A key's ``device_id`` never changes. Answers the key."""
+        content = _key_update(
+            {
+                "name": name,
+                "labels": labels,
+                "limits": limits,
+                "daily_spend_cap": daily_spend_cap,
+                "expires_at": expires_at,
+                "may_search_collections": may_search_collections,
+            }
+        )
+        _, _, body = await self._client._json("PATCH", _key_path(key_id), content)
+        return cast(Dict[str, Any], body)
+
+    async def revoke(self, key_id: str) -> Dict[str, Any]:
+        """Revoke a key, at once: ``{id, revoked}``. The next call with it gets a 401;
+        a revocation cannot be undone."""
+        _, _, body = await self._client._json("DELETE", _key_path(key_id), None)
+        return cast(Dict[str, Any], body)
+
+    async def revoke_by_labels(
+        self,
+        labels: Mapping[str, str],
+        device_ids: Optional[Sequence[str]] = None,
+        dry_run: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Revoke every active key that has all of ``labels`` (and, with ``device_ids``,
+        is one of those devices), at most 10,000 a call: ``{revoked, more}``. Call it
+        again while ``more`` is true. With ``dry_run=True`` it revokes nothing and
+        answers ``{would_revoke, more}``."""
+        content = _revoke_body(labels, device_ids, dry_run)
+        _, _, body = await self._client._json("POST", _base.KEYS_PATH + "/revoke", content)
         return cast(Dict[str, Any], body)

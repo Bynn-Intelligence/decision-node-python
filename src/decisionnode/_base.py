@@ -65,6 +65,8 @@ UPLOADS_PATH = "/v1/uploads"
 SESSIONS_PATH = "/v1/sessions"
 BATCHES_PATH = "/v1/batches"
 COLLECTIONS_PATH = "/v1/collections"
+KEYS_PATH = "/v1/keys"
+USAGE_PATH = "/v1/usage"
 
 # Retry policies. DEFAULT: 408, 429, 5xx, timeouts and dropped connections. MUTATION
 # (batch create, add and finalize): only 429 and 529, which the API answers before
@@ -75,6 +77,7 @@ COLLECTIONS_PATH = "/v1/collections"
 # and may bill it. IDEMPOTENT (collections create, enroll and update_item, which carry
 # their own Idempotency-Key, the same on every attempt): as DEFAULT, and also a 409
 # idempotency_in_progress, after its Retry-After; a 409 idempotency_key_reused is raised.
+# keys.create carries the caller's Idempotency-Key, or a new one, and retries as they do.
 DEFAULT = "default"
 MUTATION = "mutation"
 SESSION_OPEN = "session_open"
@@ -83,6 +86,9 @@ IDEMPOTENT = "idempotent"
 IDEMPOTENCY_IN_PROGRESS = "idempotency_in_progress"
 # The reason of a 529 that is never retried (it has no Retry-After).
 ENROLLMENT_UNPRICED = "enrollment_unpriced"
+# A key past its daily spend cap: a 429 never retried, since its Retry-After runs to the
+# cap's reset at 00:00 UTC.
+SPEND_CAP_REACHED = "key_spend_cap_reached"
 
 # A 400 for an upload the client placed in the request: it uploads again and sends the
 # request once more.
@@ -303,6 +309,8 @@ def check_fallback(fallback: Any) -> Optional[bool]:
 def should_retry(policy: str, status: int, error: DecisionNodeError) -> bool:
     if status == 529 and (error.details or {}).get("reason") == ENROLLMENT_UNPRICED:
         # An enrollment the API has no price for: a retry never cures it.
+        return False
+    if status == 429 and error.error_type == SPEND_CAP_REACHED:
         return False
     if policy == MUTATION:
         return status in (429, 529)
