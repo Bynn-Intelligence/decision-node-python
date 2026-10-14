@@ -170,7 +170,101 @@ def test_a_create_409_is_raised_and_never_retried(mode: str, error_type: str, sl
     assert len(rec.requests) == 1 and sleeps == []
 
 
-# --------------------------------------------------------------------------- list, get, update, revoke
+def local_entry(mode: str, call: str, /, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+    rec = Recorder(json_response(201, CREATED))
+    with pytest.raises(dn.ValidationError) as info:
+        Harness(mode, rec).call(call, *args, **kwargs)
+    assert rec.requests == [] and info.value.status is None and len(info.value.entries) == 1
+    return info.value.entries[0]  # type: ignore[no-any-return]
+
+
+@pytest.mark.parametrize(
+    "kwargs, loc, msg, given",
+    [
+        ({"name": "   "}, ["body", "name"], "Give the key a name.", "   "),
+        ({"name": "x" * 49}, ["body", "name"], "Key names are at most 48 characters.", "x" * 49),
+        (
+            {"name": "k", "device_id": " kiosk"},
+            ["body", "device_id"],
+            "device_id is 1 to 128 printable ASCII characters, not starting with a space.",
+            " kiosk",
+        ),
+        ({"name": "k", "labels": ["a"]}, ["body", "labels"], "labels is an object of names to values.", None),
+        (
+            {"name": "k", "labels": {str(i): "v" for i in range(17)}},
+            ["body", "labels"],
+            "A key has at most 16 labels.",
+            None,
+        ),
+        (
+            {"name": "k", "labels": {"Store": "1"}},
+            ["body", "labels"],
+            "A label's name is 1 to 32 of a-z, 0-9, _ . and -.",
+            None,
+        ),
+        (
+            {"name": "k", "labels": {"store": ""}},
+            ["body", "labels", "store"],
+            "A label's value is 1 to 64 characters of text.",
+            None,
+        ),
+        ({"name": "k", "limits": 5}, ["body", "limits"], "limits is an object, or null.", 5),
+        (
+            {"name": "k", "daily_spend_cap": {"usd": 0.005}},
+            ["body", "daily_spend_cap"],
+            "daily_spend_cap.usd is from 0.01 to 1000, in cents, or null.",
+            None,
+        ),
+        (
+            {"name": "k", "daily_spend_cap": {"usd": 1000.01}},
+            ["body", "daily_spend_cap"],
+            "daily_spend_cap.usd is from 0.01 to 1000, in cents, or null.",
+            None,
+        ),
+    ],
+)
+def test_create_checks(mode: str, kwargs: Dict[str, Any], loc: List[Any], msg: str, given: Any) -> None:
+    entry = local_entry(mode, "keys.create", **kwargs)
+    assert (entry["type"], entry["loc"], entry["msg"], entry["input"]) == ("value_error", loc, msg, given)
+
+
+def test_create_checks_the_body_before_the_idempotency_key(mode: str) -> None:
+    entry = local_entry(mode, "keys.create", "", idempotency_key="")
+    assert entry["msg"] == "Give the key a name."
+
+
+def test_a_whole_cent_cap_passes(mode: str) -> None:
+    rec = Recorder(json_response(201, CREATED))
+    Harness(mode, rec).call("keys.create", "k", daily_spend_cap={"usd": 1000})
+    assert rec.body()["daily_spend_cap"] == {"usd": 1000}
+
+
+def test_update_checks_what_it_sends_and_null_clears_unchecked(mode: str) -> None:
+    entry = local_entry(mode, "keys.update", KEY_ID, name="x" * 49)
+    assert entry["msg"] == "Key names are at most 48 characters."
+    rec = Recorder(json_response(200, KEY))
+    Harness(mode, rec).call("keys.update", KEY_ID, labels=None, limits=None, daily_spend_cap=None)
+    assert rec.body() == {"labels": None, "limits": None, "daily_spend_cap": None}
+
+
+@pytest.mark.parametrize(
+    "args, loc, msg",
+    [
+        (({},), ["body", "labels"], "A bulk revoke names at least one label: every key it revokes has them all."),
+        (({"store": "1"}, ["d"] * 1001), ["body", "device_ids"], "device_ids is a list of at most 1,000 device ids."),
+        (
+            ({"store": "1"}, ["ok", " bad"]),
+            ["body", "device_id"],
+            "device_id is 1 to 128 printable ASCII characters, not starting with a space.",
+        ),
+    ],
+)
+def test_revoke_by_labels_checks(mode: str, args: Any, loc: List[Any], msg: str) -> None:
+    entry = local_entry(mode, "keys.revoke_by_labels", *args)
+    assert (entry["loc"], entry["msg"]) == (loc, msg)
+
+
+# --------------------------------------------------------------------------- list, update, revoke
 
 
 def test_list_sends_its_filters(mode: str) -> None:

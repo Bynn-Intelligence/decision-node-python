@@ -99,10 +99,12 @@ from ._validate import (
     check_images,
     check_item,
     check_item_update,
+    check_key_fields,
     check_lines,
     check_list_query,
     check_reference_query,
     check_request,
+    check_revoke_by_labels,
     check_session_open,
     count_entries,
     keys_list_query,
@@ -355,10 +357,8 @@ def _key_create(
     may_search_collections: Any,
     idempotency_key: Any,
 ) -> Tuple[bytes, Dict[str, str]]:
-    """A key's create body, with only the fields given, and its Idempotency-Key: the
-    caller's, else a new one."""
-    if idempotency_key is not None:
-        check_idempotency_key(idempotency_key)
+    """A key's create body, with only the fields given, checked as the API checks it, and
+    its Idempotency-Key: the caller's, else a new one."""
     body: Dict[str, Any] = {"name": name}
     for field, value in (
         ("device_id", device_id),
@@ -370,18 +370,23 @@ def _key_create(
     ):
         if value is not None:
             body[field] = value
+    check_key_fields(body, clears=False)
+    if idempotency_key is not None:
+        check_idempotency_key(idempotency_key)
     headers = _idempotency_key() if idempotency_key is None else {"Idempotency-Key": idempotency_key}
     return _base.encode(body), headers
 
 
 def _key_update(fields: Mapping[str, Any]) -> bytes:
     body = {name: value for name, value in fields.items() if value is not UNSET}
+    check_key_fields(body, clears=True)
     if not body:
         raise usage_error("Nothing to change.")
     return _base.encode(body)
 
 
 def _revoke_body(labels: Any, device_ids: Any, dry_run: Any) -> bytes:
+    check_revoke_by_labels(labels, device_ids)
     body: Dict[str, Any] = {"labels": labels}
     if device_ids is not None:
         body["device_ids"] = list(device_ids)

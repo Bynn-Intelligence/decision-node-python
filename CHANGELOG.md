@@ -7,7 +7,7 @@ All notable changes to this package are listed here. The format follows
 ## [0.3.3] - 2026-10-14
 
 Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`) and passes
-conformance suite 1.19.
+conformance suite 1.20.
 
 ### Added
 
@@ -17,9 +17,12 @@ conformance suite 1.19.
   and `all` (by labels, `device_id` and `status`, a page of 1 to 200), `update`
   (only the fields given; `None` clears `labels`, `limits`, `daily_spend_cap` or
   `expires_at`), `revoke` and `revoke_by_labels` (with `device_ids` and `dry_run`). Each
-  returns the API's object as sent. A malformed `idempotency_key`, a label filter, a
-  `device_id`, a `status`, a `limit` and an update with nothing to change are refused
-  before sending with the API's messages.
+  returns the API's object as sent. Checked before sending, as the API answers them: a
+  key's name (1 to 48 characters once trimmed), `device_id`, labels (at most 16), the shape
+  of `limits` and a `daily_spend_cap` from 0.01 to 1,000 in whole cents (each the API's 422
+  entry, the first refused in the body's order), an update with nothing to change, a
+  malformed `idempotency_key`, `list`'s filters and `limit`, and a bulk revoke without a
+  label or with over 1,000 `device_ids`.
 - Per-key usage, as `dn.usage`: `key` (`GET /v1/keys/{key_id}/usage`), `list`
   (`GET /v1/usage`, one page) and `all` (every page, `next_cursor` followed until it is
   `None`). Each returns the API's object as sent and retries as any read. The query's

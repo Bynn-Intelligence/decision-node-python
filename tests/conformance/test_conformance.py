@@ -667,6 +667,9 @@ async def invoke(client: Any, mode: str, call: Dict[str, Any], ctx: Dict[str, An
     if method.startswith("usage."):
         # Suite 1.18: key, list, all.
         return await settle(getattr(client.usage, method.split(".", 1)[1])(**a))
+    if method.startswith("keys."):
+        # Suite 1.20: create, list, all, update, revoke, revoke_by_labels.
+        return await settle(getattr(client.keys, method.split(".", 1)[1])(**a))
     if method.startswith("batches."):
         result = await settle(getattr(client.batches, method.split(".", 1)[1])(**a))
         if method == "batches.results":
@@ -753,8 +756,8 @@ async def close_client(client: Any) -> None:
 # --------------------------------------------------------------------------- outcomes
 
 
-# The collections and usage calls' results, each the API's object as sent; collections
-# and usage_items are lists.
+# The collections, usage and keys calls' results, each the API's object as sent;
+# collections, usage_items and api_keys are lists.
 COLLECTION_KINDS = (
     "collection",
     "collections",
@@ -764,8 +767,14 @@ COLLECTION_KINDS = (
     "key_usage",
     "usage_page",
     "usage_items",
+    "created_key",
+    "api_key",
+    "key_page",
+    "api_keys",
+    "key_revoked",
+    "keys_revoked",
 )
-LIST_KINDS = ("collections", "usage_items")
+LIST_KINDS = ("collections", "usage_items", "api_keys")
 
 
 def check_collection_result(kind: str, expected: Any, result: Any, path: str) -> None:

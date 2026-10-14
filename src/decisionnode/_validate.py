@@ -86,6 +86,10 @@ LABEL_NAME_PATTERN = "[a-z0-9_.-]{1,32}"
 LABEL_VALUE_CHARS = 64
 DEVICE_ID_CHARS = 128
 IDEMPOTENCY_KEY_CHARS = 255
+KEY_NAME_CHARS = 48
+KEY_MAX_LABELS = 16
+KEY_SPEND_CAP_MAX_USD = 1000
+MAX_REVOKE_DEVICES = 1000
 UNITS = ("pixels", "normalized")
 Entry = Tuple[Dict[str, Any], Optional[str]]
 Limits = Mapping[str, Any]
@@ -1073,12 +1077,7 @@ def _label_filters(labels: Any) -> Query:
 def _device_filter(device_id: Any) -> Query:
     if device_id is None:
         return []
-    if (
-        not isinstance(device_id, str)
-        or not 1 <= len(device_id) <= DEVICE_ID_CHARS
-        or not all(0x20 <= ord(c) <= 0x7E for c in device_id)
-        or device_id.startswith(" ")
-    ):
+    if not _device_ok(device_id):
         raise usage_error("device_id is 1 to 128 printable ASCII characters, not starting with a space.")
     return [("device_id", device_id)]
 
@@ -1157,3 +1156,99 @@ def check_idempotency_key(key: Any) -> None:
         or not all(0x20 <= ord(c) <= 0x7E for c in key)
     ):
         raise usage_error("Idempotency-Key must be sent once, as 1 to 255 printable ASCII characters.")
+
+
+def _device_ok(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= DEVICE_ID_CHARS
+        and all(0x20 <= ord(c) <= 0x7E for c in value)
+        and not value.startswith(" ")
+    )
+
+
+def _key_entry(loc: List[Any], msg: str, value: Any) -> Entry:
+    return (_entry("value_error", ["body"] + loc, msg, _echoed(value)), None)
+
+
+def _key_name_entries(name: Any) -> List[Entry]:
+    """A key's name, trimmed, 1 to 48 characters; its characters are the server's to judge."""
+    if not isinstance(name, str) or not name.strip():
+        return [_key_entry(["name"], "Give the key a name.", name)]
+    if len(name.strip()) > KEY_NAME_CHARS:
+        return [_key_entry(["name"], "Key names are at most 48 characters.", name)]
+    return []
+
+
+def _key_labels_entries(labels: Any) -> List[Entry]:
+    if not isinstance(labels, Mapping):
+        return [_key_entry(["labels"], "labels is an object of names to values.", labels)]
+    if len(labels) > KEY_MAX_LABELS:
+        return [_key_entry(["labels"], "A key has at most 16 labels.", labels)]
+    for name, value in labels.items():
+        if not isinstance(name, str) or not re.fullmatch(LABEL_NAME_PATTERN, name):
+            return [_key_entry(["labels"], "A label's name is 1 to 32 of a-z, 0-9, _ . and -.", labels)]
+        if (
+            not isinstance(value, str)
+            or not 1 <= len(value) <= LABEL_VALUE_CHARS
+            or any(unicodedata.category(c) == "Cc" for c in value)
+        ):
+            return [_key_entry(["labels", name], "A label's value is 1 to 64 characters of text.", labels)]
+    return []
+
+
+def _key_cap_entries(cap: Any) -> List[Entry]:
+    """``daily_spend_cap``: ``{"usd"}`` from 0.01 to 1,000 in whole cents."""
+    usd = cap.get("usd") if isinstance(cap, Mapping) else None
+    if not isinstance(usd, (int, float)) or isinstance(usd, bool) or not math.isfinite(usd):
+        usd = math.nan
+    cents = round(usd * 100) if math.isfinite(usd) else 0
+    if abs(usd * 100 - cents) >= 1e-6 or cents < 1 or usd > KEY_SPEND_CAP_MAX_USD:
+        return [_key_entry(["daily_spend_cap"], "daily_spend_cap.usd is from 0.01 to 1000, in cents, or null.", cap)]
+    return []
+
+
+def _key_field_entries(fields: Mapping[str, Any], clears: bool) -> List[Entry]:
+    """The fields beyond the name, in the order the body sends them; on an update a field
+    given as None clears it and is checked no further."""
+    entries: List[Entry] = []
+    if "device_id" in fields and not _device_ok(fields["device_id"]):
+        msg = "device_id is 1 to 128 printable ASCII characters, not starting with a space."
+        entries.append(_key_entry(["device_id"], msg, fields["device_id"]))
+    if "labels" in fields and not (clears and fields["labels"] is None):
+        entries.extend(_key_labels_entries(fields["labels"]))
+    if "limits" in fields and not (clears and fields["limits"] is None) and not isinstance(fields["limits"], Mapping):
+        entries.append(_key_entry(["limits"], "limits is an object, or null.", fields["limits"]))
+    if "daily_spend_cap" in fields and not (clears and fields["daily_spend_cap"] is None):
+        entries.extend(_key_cap_entries(fields["daily_spend_cap"]))
+    return entries
+
+
+def check_key_fields(fields: Mapping[str, Any], clears: bool) -> None:
+    """A key's create (``clears`` false) or update body, the fields given only, checked in
+    the body's order: the first fault is the API's 422 entry. A limit's ceiling, the
+    expiry's window and a name's characters are the server's."""
+    entries = _key_name_entries(fields["name"]) if "name" in fields else []
+    if not entries:
+        entries = _key_field_entries(fields, clears)
+    if entries:
+        _raise_422(entries[:1])
+
+
+def check_revoke_by_labels(labels: Any, device_ids: Any) -> None:
+    """A bulk revoke's labels (at least one) and ``device_ids`` (at most 1,000)."""
+    entries = _key_labels_entries(labels)
+    if not entries and not labels:
+        msg = "A bulk revoke names at least one label: every key it revokes has them all."
+        entries = [_key_entry(["labels"], msg, labels)]
+    if not entries and device_ids is not None:
+        if not isinstance(device_ids, (list, tuple)) or len(device_ids) > MAX_REVOKE_DEVICES:
+            entries = [_key_entry(["device_ids"], "device_ids is a list of at most 1,000 device ids.", device_ids)]
+        else:
+            for device in device_ids:
+                if not _device_ok(device):
+                    msg = "device_id is 1 to 128 printable ASCII characters, not starting with a space."
+                    entries = [_key_entry(["device_id"], msg, device)]
+                    break
+    if entries:
+        _raise_422(entries[:1])
