@@ -5,7 +5,7 @@
 The official Python client for the DecisionNode API: ask yes-or-no, multiple-choice,
 scale and number questions about any text, JSON or image, and get calibrated
 probabilities back. One request at a time, a live session answering a stream of frames,
-or a batch of thousands at half the price. Sync and async clients, fully typed.
+or a batch of thousands at the batch price. Sync and async clients, fully typed.
 
 ## Install
 
@@ -531,7 +531,10 @@ the async client the feed may be an async iterator and `on_reply` a coroutine fu
 
 ## Batches
 
-The Batch API answers many decide requests within 24 hours at half the price.
+The Batch API answers many decide requests at the batch price: 50% off the live price on
+`decisionnode-flash`, 30% off on `decisionnode-moe` (each model's `batch_price_factor` in
+`models()`, 0.5 and 0.7). There is no set time at which a batch runs or finishes, so poll
+for it. Requests not answered within 24 hours of finalizing expire and are not charged.
 
 ```python
 requests = [

@@ -1,4 +1,7 @@
-"""The Batch API: many decide requests answered within 24 hours at half the price.
+"""The Batch API: many decide requests answered at the batch price.
+
+No time is set for a batch to run or finish; requests not answered within 24 hours of
+finalizing expire and are not charged.
 
 ``batches.create`` uploads a draft as JSON Lines, ``batches.add`` adds requests in calls
 of at most 10 MiB, ``batches.finalize`` queues it, ``batches.get`` reads it,
