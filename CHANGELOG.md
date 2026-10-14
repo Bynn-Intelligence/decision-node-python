@@ -80,6 +80,10 @@ Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`).
   is a `Fallback` (`served_model`, `requested_model`) on an answer from another model than
   the one asked for, read from `x-decisionnode-fallback` and
   `x-decisionnode-requested-model`; `None` otherwise.
+- `ModelInfo.price_per_million_input`, `price_per_million_output`,
+  `price_per_million_image`, `price_per_million_video` and `batch_price_factor`: the
+  entry's prices as sent, each `None` when it states none (a fine-tuned model states no
+  `batch_price_factor`). `limits` and `raw` keep them too.
 
 ### Changed
 

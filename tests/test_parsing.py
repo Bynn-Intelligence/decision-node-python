@@ -88,6 +88,30 @@ def test_model_limits() -> None:
     assert parse_model({"name": "x"}).limits == {}
 
 
+def test_model_prices() -> None:
+    prices = {
+        "price_per_million_input": 0.042,
+        "price_per_million_output": 0,
+        "price_per_million_image": 0.09,
+        "price_per_million_video": 0.09,
+        "batch_price_factor": 0.7,
+    }
+    m = parse_model({"name": "decisionnode-moe", **prices})
+    assert (
+        m.price_per_million_input,
+        m.price_per_million_output,
+        m.price_per_million_image,
+        m.price_per_million_video,
+        m.batch_price_factor,
+    ) == (0.042, 0, 0.09, 0.09, 0.7)
+    assert m.limits == prices and m.raw == {"name": "decisionnode-moe", **prices}
+    tuned = parse_model({"name": "decisionnode-flash@acme/triage", "price_per_million_input": 0.055})
+    assert tuned.price_per_million_input == 0.055 and tuned.batch_price_factor is None
+    odd = parse_model({"name": "x", "price_per_million_input": "0.04", "batch_price_factor": True})
+    assert odd.price_per_million_input is None and odd.batch_price_factor is None
+    assert odd.limits["batch_price_factor"] is True
+
+
 GOOD_CHOICE = {"type": "choice", "choice": "a", "confidence": 0.5, "probabilities": {"a": 0.75, "b": 0.25}}
 GOOD_SCORE = {
     "type": "score",

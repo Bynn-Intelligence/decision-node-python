@@ -441,6 +441,11 @@ class ModelInfo:
             version the name resolves to.
         status: A fine-tuned model's status: ``deployed`` (answers decisions) or ``ready``
             (trained, not deployed); any other value as received.
+        price_per_million_input, price_per_million_output, price_per_million_image,
+            price_per_million_video: The model's prices in USD per million input, output,
+            image and video tokens, as sent; ``None`` when the entry states none.
+        batch_price_factor: The share of the live prices a batch line on this model pays,
+            as sent; ``None`` when the entry states none, as on a fine-tuned model.
     """
 
     name: str
@@ -452,6 +457,11 @@ class ModelInfo:
     base: Optional[str] = None
     adapter_version: Optional[int] = None
     status: Optional[str] = None
+    price_per_million_input: Optional[float] = None
+    price_per_million_output: Optional[float] = None
+    price_per_million_image: Optional[float] = None
+    price_per_million_video: Optional[float] = None
+    batch_price_factor: Optional[float] = None
 
 
 # --------------------------------------------------------------------------- parsing
@@ -670,6 +680,10 @@ def parse_latency(value: Optional[str]) -> Optional[Union[int, float]]:
     return int(number) if number.is_integer() else number
 
 
+def _number_or_none(value: Any) -> Optional[float]:
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
 def parse_model(raw: Any) -> ModelInfo:
     entry = dict(raw) if isinstance(raw, Mapping) else {}
     fine_tuned, base, version, status = (entry.get(k) for k in ("fine_tuned", "base", "adapter_version", "status"))
@@ -683,6 +697,11 @@ def parse_model(raw: Any) -> ModelInfo:
         base=base if isinstance(base, str) else None,
         adapter_version=version if isinstance(version, int) and not isinstance(version, bool) else None,
         status=status if isinstance(status, str) else None,
+        price_per_million_input=_number_or_none(entry.get("price_per_million_input")),
+        price_per_million_output=_number_or_none(entry.get("price_per_million_output")),
+        price_per_million_image=_number_or_none(entry.get("price_per_million_image")),
+        price_per_million_video=_number_or_none(entry.get("price_per_million_video")),
+        batch_price_factor=_number_or_none(entry.get("batch_price_factor")),
     )
 
 

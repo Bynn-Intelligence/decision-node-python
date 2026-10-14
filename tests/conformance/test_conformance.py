@@ -374,7 +374,21 @@ def norm_model(m: Any, expected: Any) -> Dict[str, Any]:
     for name in ("fine_tuned", "base", "adapter_version", "status"):
         if isinstance(expected, dict) and name in expected:
             out[name] = getattr(m, name)
+    # The typed prices are the entry's, as sent.
+    for name in MODEL_PRICES:
+        sent = m.limits.get(name)
+        if not same(getattr(m, name), sent if isinstance(sent, (int, float)) and not isinstance(sent, bool) else None):
+            raise Fail("models: %s.%s is %s, the entry sent %s" % (m.name, name, short(getattr(m, name)), short(sent)))
     return out
+
+
+MODEL_PRICES = (
+    "price_per_million_input",
+    "price_per_million_output",
+    "price_per_million_image",
+    "price_per_million_video",
+    "batch_price_factor",
+)
 
 
 def norm_cost(c: Optional[dn.Cost]) -> Optional[Dict[str, Any]]:

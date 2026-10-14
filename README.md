@@ -592,6 +592,8 @@ Each entry is a `ModelInfo`. `limits` holds every other field the model publishe
 prices (`price_per_million_input`, `price_per_million_output`, `price_per_million_image`,
 `price_per_million_video`, in USD per million tokens, and `batch_price_factor`), the token
 limit, the number grid limits, the upload limits, and the `sessions` and `batch` objects.
+The five prices are also fields of `ModelInfo`, as sent, each `None` when the entry states
+none (a fine-tuned model states no `batch_price_factor`).
 
 | Model | |
 |---|---|
