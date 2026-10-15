@@ -308,7 +308,8 @@ class DepthReading(Reading):
         ahead: Meters to the nearest obstacle straight ahead (the middle third of the
             picture, the floor or ground left out); ``None`` when none is found.
         directions: The same in 7 equal vertical strips of the picture, left to right, each
-            meters or ``None``.
+            meters or ``None``; a reading with another number of them is an
+            :class:`UnknownReading`.
         ground: ``True`` when a floor or ground was found and left out of ``ahead`` and
             ``directions``; ``False`` when none was, and they include everything.
         grid_rows: The grid's rows.
@@ -436,7 +437,7 @@ class SegmentReading(Reading):
         depth_source: Where the distances come from (``bynn_depth``); ``None`` with depth
             off.
         assumed_hfov_deg: The horizontal field of view the sizes in meters assume, in
-            degrees.
+            degrees; ``None`` when the reading has none.
     """
 
     width: int
@@ -444,7 +445,7 @@ class SegmentReading(Reading):
     prompts: List[str]
     instances: List[SegmentInstance]
     depth_source: Optional[str]
-    assumed_hfov_deg: Union[int, float]
+    assumed_hfov_deg: Optional[Union[int, float]]
 
 
 AnyReading = Union[
@@ -644,10 +645,8 @@ def _face_recognition(raw: Dict[str, Any]) -> FaceRecognitionReading:
 
 
 def _nullable(raw: Mapping[str, Any], key: str) -> Optional[Union[int, float]]:
-    """A number or null, the key present."""
-    if key not in raw:
-        raise _Malformed(key)
-    value = raw[key]
+    """A number, or ``None`` when null or absent."""
+    value = raw.get(key)
     if value is None:
         return None
     if not _is_number(value):
@@ -676,9 +675,13 @@ def _points(value: Any, key: str) -> List[List[Union[int, float]]]:
     return [_numbers(p, key, 2) for p in value]
 
 
+# A depth reading's directions: 7 equal vertical strips of the picture, left to right.
+DEPTH_DIRECTIONS = 7
+
+
 def _depth(raw: Dict[str, Any]) -> DepthReading:
     directions = _list(raw, "directions")
-    if not all(d is None or _is_number(d) for d in directions):
+    if len(directions) != DEPTH_DIRECTIONS or not all(d is None or _is_number(d) for d in directions):
         raise _Malformed("directions")
     ground = raw.get("ground")
     if not isinstance(ground, bool):
@@ -700,21 +703,19 @@ def _depth(raw: Dict[str, Any]) -> DepthReading:
     )
 
 
-def _present_object(raw: Mapping[str, Any], key: str) -> Optional[Mapping[str, Any]]:
-    """An object or null, the key present."""
-    if key not in raw:
-        raise _Malformed(key)
-    value = raw[key]
+def _object_or_none(raw: Mapping[str, Any], key: str) -> Optional[Mapping[str, Any]]:
+    """An object, or ``None`` when null or absent."""
+    value = raw.get(key)
     if value is not None and not isinstance(value, Mapping):
         raise _Malformed(key)
     return value
 
 
 def _segment_instance(e: Mapping[str, Any]) -> SegmentInstance:
-    opening = _present_object(e, "opening")
-    depth = _present_object(e, "depth")
-    size = _present_object(e, "size_m")
-    extent = None if size is None else _present_object(size, "opening")
+    opening = _object_or_none(e, "opening")
+    depth = _object_or_none(e, "depth")
+    size = _object_or_none(e, "size_m")
+    extent = None if size is None else _object_or_none(size, "opening")
     return SegmentInstance(
         label=_string(e, "label"),
         score=_number(e, "score"),
@@ -753,8 +754,6 @@ def _segment(raw: Dict[str, Any]) -> SegmentReading:
     prompts = _list(raw, "prompts")
     if not all(isinstance(p, str) for p in prompts):
         raise _Malformed("prompts")
-    if "depth_source" not in raw:
-        raise _Malformed("depth_source")
     return SegmentReading(
         image=_string(raw, "image"),
         raw=raw,
@@ -763,7 +762,7 @@ def _segment(raw: Dict[str, Any]) -> SegmentReading:
         prompts=list(prompts),
         instances=[_segment_instance(e) for e in _entries(raw, "instances")],
         depth_source=_optional_string(raw, "depth_source"),
-        assumed_hfov_deg=_number(raw, "assumed_hfov_deg"),
+        assumed_hfov_deg=_nullable(raw, "assumed_hfov_deg"),
     )
 
 

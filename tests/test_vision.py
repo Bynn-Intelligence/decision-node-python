@@ -119,12 +119,18 @@ def test_an_unreadable_picture_is_generic() -> None:
     assert reading.raw == {"image": "front", "readable": False}
 
 
+def test_depth_without_ahead_reads_none() -> None:
+    (reading,) = readings("bynn_depth", [changed(DEPTH, ["ahead"], ...)])
+    assert type(reading) is dn.DepthReading and reading.ahead is None
+
+
 @pytest.mark.parametrize(
     "path, value",
     [
-        (["ahead"], ...),
         (["ahead"], "near"),
         (["directions"], "left"),
+        (["directions"], [1.0] * 6),
+        (["directions"], [1.0] * 8),
         (["directions", 0], "far"),
         (["ground"], 1),
         (["grid_rows"], 2.5),
@@ -172,6 +178,23 @@ def test_segment_reading() -> None:
     assert pad.depth == dn.SegmentDepth(median=7.2, opening_median=None, opening_rim_median=None)
 
 
+@pytest.mark.parametrize(
+    "path, read",
+    [
+        (["depth_source"], lambda r: r.depth_source),
+        (["assumed_hfov_deg"], lambda r: r.assumed_hfov_deg),
+        (["instances", 0, "opening"], lambda r: r.instances[0].opening),
+        (["instances", 0, "depth"], lambda r: r.instances[0].depth),
+        (["instances", 0, "depth", "opening_median"], lambda r: r.instances[0].depth.opening_median),
+        (["instances", 0, "size_m"], lambda r: r.instances[0].size_m),
+        (["instances", 0, "size_m", "opening"], lambda r: r.instances[0].size_m.opening),
+    ],
+)
+def test_segment_fields_absent_read_as_none(path: List[Any], read: Any) -> None:
+    (reading,) = readings("bynn_segment", [changed(SEGMENT, path, ...)])
+    assert type(reading) is dn.SegmentReading and read(reading) is None
+
+
 def test_segment_without_depth_or_instances_is_a_reading() -> None:
     no_depth = dict(GATE, depth=None, size_m=None)
     raw = dict(SEGMENT, instances=[no_depth], depth_source=None)
@@ -188,19 +211,21 @@ def test_segment_without_depth_or_instances_is_a_reading() -> None:
         (["prompts"], "gate"),
         (["prompts", 0], 7),
         (["instances"], {"label": "gate"}),
-        (["depth_source"], ...),
-        (["assumed_hfov_deg"], None),
+        (["depth_source"], 5),
+        (["assumed_hfov_deg"], "wide"),
         (["width"], 1280.5),
         (["instances", 0, "label"], None),
         (["instances", 0, "box"], [0.1, 0.2, 0.3]),
         (["instances", 0, "polygon"], [[0.1, 0.2, 0.3]]),
         (["instances", 0, "centroid"], {"x": 0.5, "y": 0.5}),
-        (["instances", 0, "opening"], ...),
+        (["instances", 0, "opening"], "hole"),
         (["instances", 0, "opening", "offset"], [0.0]),
+        (["instances", 0, "opening", "area"], ...),
         (["instances", 0, "depth"], 5.05),
-        (["instances", 0, "depth", "opening_median"], ...),
-        (["instances", 0, "size_m"], ...),
-        (["instances", 0, "size_m", "opening"], ...),
+        (["instances", 0, "depth", "opening_median"], "far"),
+        (["instances", 0, "size_m"], [2.45, 2.33]),
+        (["instances", 0, "size_m", "width"], ...),
+        (["instances", 0, "size_m", "opening"], 1.82),
         (["instances", 0, "size_m", "opening", "width"], None),
     ],
 )
