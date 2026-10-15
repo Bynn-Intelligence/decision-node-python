@@ -514,6 +514,14 @@ def _integer(raw: Mapping[str, Any], key: str) -> int:
     return value
 
 
+def _count(raw: Mapping[str, Any], key: str) -> int:
+    """A whole number of 0 or more: a grid's rows and columns, a picture's sides."""
+    value = _integer(raw, key)
+    if value < 0:
+        raise _Malformed(key)
+    return value
+
+
 def _optional(read: Callable[[Mapping[str, Any], str], Any], raw: Mapping[str, Any], key: str, required: bool) -> Any:
     if raw.get(key) is None:
         if required:
@@ -692,14 +700,14 @@ def _depth(raw: Dict[str, Any]) -> DepthReading:
         ahead=_nullable(raw, "ahead"),
         directions=list(directions),
         ground=ground,
-        grid_rows=_integer(raw, "grid_rows"),
-        grid_cols=_integer(raw, "grid_cols"),
+        grid_rows=_count(raw, "grid_rows"),
+        grid_cols=_count(raw, "grid_cols"),
         grid=[_numbers(row, "grid") for row in _list(raw, "grid")],
         depth_min=_number(raw, "depth_min"),
         depth_max=_number(raw, "depth_max"),
         depth_median=_number(raw, "depth_median"),
-        width=_integer(raw, "width"),
-        height=_integer(raw, "height"),
+        width=_count(raw, "width"),
+        height=_count(raw, "height"),
     )
 
 
@@ -757,8 +765,8 @@ def _segment(raw: Dict[str, Any]) -> SegmentReading:
     return SegmentReading(
         image=_string(raw, "image"),
         raw=raw,
-        width=_integer(raw, "width"),
-        height=_integer(raw, "height"),
+        width=_count(raw, "width"),
+        height=_count(raw, "height"),
         prompts=list(prompts),
         instances=[_segment_instance(e) for e in _entries(raw, "instances")],
         depth_source=_optional_string(raw, "depth_source"),

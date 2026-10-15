@@ -6,6 +6,8 @@ All notable changes to this package are listed here. The format follows
 
 ## [Unreleased]
 
+Passes conformance suite 1.21.
+
 ### Added
 
 - `DepthReading`, a reading of the `bynn_depth` booster (Depth Vision): `ahead`,
@@ -15,7 +17,10 @@ All notable changes to this package are listed here. The format follows
   `height`, `prompts`, `instances` (each a `SegmentInstance` with `label`, `score`, `box`,
   `polygon`, `area`, `centroid`, `opening` as a `SegmentOpening`, `depth` as a
   `SegmentDepth` and `size_m` as a `SegmentSize` with its `SegmentExtent`), `depth_source`
-  and `assumed_hfov_deg`. A reading with a field missing or of the wrong type stays an
+  and `assumed_hfov_deg`. An absent `ahead`, `depth_source`, `assumed_hfov_deg`, `opening`,
+  `depth`, `size_m` (or a distance inside `depth`, or the size's `opening`) reads as
+  `None`. A reading with a required field missing or of the wrong type, `directions` other
+  than 7 entries, or a negative or fractional grid size or picture side stays an
   `UnknownReading`.
 - The README lists every booster the API serves, `face_detection`, `face_recognition`,
   `ocr`, `bynn_depth` and `bynn_segment` beside `age` and `ai_generated`, with their
