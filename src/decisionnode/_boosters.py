@@ -9,7 +9,7 @@ to know, so a booster added on the server works with this version of the client.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Union
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Union, cast
 
 __all__ = [
     "Booster",
@@ -24,6 +24,13 @@ __all__ = [
     "FaceDetectionReading",
     "FaceMatch",
     "FaceRecognitionReading",
+    "DepthReading",
+    "SegmentReading",
+    "SegmentInstance",
+    "SegmentOpening",
+    "SegmentDepth",
+    "SegmentSize",
+    "SegmentExtent",
     "TopGenerator",
     "UnknownReading",
     "AnyReading",
@@ -291,8 +298,164 @@ class FaceRecognitionReading(Reading):
     collection_name: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class DepthReading(Reading):
+    """A reading of the ``bynn_depth`` booster (Depth Vision): how far away things are in the
+    picture, in meters. The distances are estimates from one picture, for decisions and
+    planning, never a safety stop.
+
+    Attributes:
+        ahead: Meters to the nearest obstacle straight ahead (the middle third of the
+            picture, the floor or ground left out); ``None`` when none is found.
+        directions: The same in 7 equal vertical strips of the picture, left to right, each
+            meters or ``None``.
+        ground: ``True`` when a floor or ground was found and left out of ``ahead`` and
+            ``directions``; ``False`` when none was, and they include everything.
+        grid_rows: The grid's rows.
+        grid_cols: The grid's columns.
+        grid: The grid, row by row from the top left of the picture turned upright, each
+            cell the distance of its part of the picture in meters.
+        depth_min: The nearest distance in the picture.
+        depth_max: The farthest distance in the picture.
+        depth_median: The median distance in the picture.
+        width: The picture's width in pixels, turned upright.
+        height: The picture's height in pixels, turned upright.
+    """
+
+    ahead: Optional[Union[int, float]]
+    directions: List[Optional[Union[int, float]]]
+    ground: bool
+    grid_rows: int
+    grid_cols: int
+    grid: List[List[Union[int, float]]]
+    depth_min: Union[int, float]
+    depth_max: Union[int, float]
+    depth_median: Union[int, float]
+    width: int
+    height: int
+
+
+@dataclass(frozen=True)
+class SegmentOpening:
+    """The opening a ``bynn_segment`` instance encloses, such as the hole of a gate, a
+    doorway or a ring. Coordinates are fractions of the picture from its top left.
+
+    Attributes:
+        polygon: The opening's outline, a list of ``[x, y]`` points.
+        centroid: Its centre, ``[x, y]``.
+        width: Its width, a fraction of the picture's.
+        height: Its height, a fraction of the picture's.
+        offset: ``[dx, dy]``, from -1 to 1.
+        area: Its area, a fraction of the picture's.
+    """
+
+    polygon: List[List[Union[int, float]]]
+    centroid: List[Union[int, float]]
+    width: Union[int, float]
+    height: Union[int, float]
+    offset: List[Union[int, float]]
+    area: Union[int, float]
+
+
+@dataclass(frozen=True)
+class SegmentDepth:
+    """How far away a ``bynn_segment`` instance is, in meters, with depth on.
+
+    Attributes:
+        median: The median distance inside its outline, or ``None``.
+        opening_median: The median distance seen through its opening, or ``None``.
+        opening_rim_median: The median distance of the opening's rim, or ``None``.
+    """
+
+    median: Optional[Union[int, float]]
+    opening_median: Optional[Union[int, float]]
+    opening_rim_median: Optional[Union[int, float]]
+
+
+@dataclass(frozen=True)
+class SegmentExtent:
+    """A width and a height in meters."""
+
+    width: Union[int, float]
+    height: Union[int, float]
+
+
+@dataclass(frozen=True)
+class SegmentSize:
+    """How large a ``bynn_segment`` instance is, in meters, with depth on.
+
+    Attributes:
+        width: Its width in meters.
+        height: Its height in meters.
+        opening: Its opening's width and height in meters, or ``None``.
+    """
+
+    width: Union[int, float]
+    height: Union[int, float]
+    opening: Optional[SegmentExtent]
+
+
+@dataclass(frozen=True)
+class SegmentInstance:
+    """One thing a ``bynn_segment`` reading found. Coordinates are fractions of the
+    picture's width and height, from its top left, turned upright.
+
+    Attributes:
+        label: The phrase it matched.
+        score: How well it matches, from 0 to 1.
+        box: ``[x1, y1, x2, y2]``, its top left and bottom right corners.
+        polygon: Its outline, a list of ``[x, y]`` points.
+        area: Its area, a fraction of the picture's.
+        centroid: Its centre, ``[x, y]``.
+        opening: The opening it encloses, or ``None``.
+        depth: Its distances in meters, or ``None`` with depth off.
+        size_m: Its size in meters, or ``None`` with depth off.
+    """
+
+    label: str
+    score: Union[int, float]
+    box: List[Union[int, float]]
+    polygon: List[List[Union[int, float]]]
+    area: Union[int, float]
+    centroid: List[Union[int, float]]
+    opening: Optional[SegmentOpening]
+    depth: Optional[SegmentDepth]
+    size_m: Optional[SegmentSize]
+
+
+@dataclass(frozen=True)
+class SegmentReading(Reading):
+    """A reading of the ``bynn_segment`` booster (Segment Vision): where the things the
+    request's ``prompt`` names are in the picture.
+
+    Attributes:
+        width: The picture's width in pixels, turned upright.
+        height: The picture's height in pixels, turned upright.
+        prompts: The phrases searched for, cleaned as the request's ``prompt`` is.
+        instances: What was found, best first; empty when nothing was, which is a reading.
+        depth_source: Where the distances come from (``bynn_depth``); ``None`` with depth
+            off.
+        assumed_hfov_deg: The horizontal field of view the sizes in meters assume, in
+            degrees.
+    """
+
+    width: int
+    height: int
+    prompts: List[str]
+    instances: List[SegmentInstance]
+    depth_source: Optional[str]
+    assumed_hfov_deg: Union[int, float]
+
+
 AnyReading = Union[
-    AgeReading, AiGeneratedReading, OcrReading, FaceDetectionReading, FaceRecognitionReading, UnknownReading
+    AgeReading,
+    AiGeneratedReading,
+    OcrReading,
+    FaceDetectionReading,
+    FaceRecognitionReading,
+    DepthReading,
+    SegmentReading,
+    UnknownReading,
 ]
 
 
@@ -480,12 +643,138 @@ def _face_recognition(raw: Dict[str, Any]) -> FaceRecognitionReading:
     )
 
 
+def _nullable(raw: Mapping[str, Any], key: str) -> Optional[Union[int, float]]:
+    """A number or null, the key present."""
+    if key not in raw:
+        raise _Malformed(key)
+    value = raw[key]
+    if value is None:
+        return None
+    if not _is_number(value):
+        raise _Malformed(key)
+    return cast(Union[int, float], value)
+
+
+def _list(raw: Mapping[str, Any], key: str) -> List[Any]:
+    value = raw.get(key)
+    if not isinstance(value, list):
+        raise _Malformed(key)
+    return value
+
+
+def _numbers(value: Any, key: str, count: Optional[int] = None) -> List[Union[int, float]]:
+    if not isinstance(value, list) or not all(_is_number(v) for v in value):
+        raise _Malformed(key)
+    if count is not None and len(value) != count:
+        raise _Malformed(key)
+    return list(value)
+
+
+def _points(value: Any, key: str) -> List[List[Union[int, float]]]:
+    if not isinstance(value, list):
+        raise _Malformed(key)
+    return [_numbers(p, key, 2) for p in value]
+
+
+def _depth(raw: Dict[str, Any]) -> DepthReading:
+    directions = _list(raw, "directions")
+    if not all(d is None or _is_number(d) for d in directions):
+        raise _Malformed("directions")
+    ground = raw.get("ground")
+    if not isinstance(ground, bool):
+        raise _Malformed("ground")
+    return DepthReading(
+        image=_string(raw, "image"),
+        raw=raw,
+        ahead=_nullable(raw, "ahead"),
+        directions=list(directions),
+        ground=ground,
+        grid_rows=_integer(raw, "grid_rows"),
+        grid_cols=_integer(raw, "grid_cols"),
+        grid=[_numbers(row, "grid") for row in _list(raw, "grid")],
+        depth_min=_number(raw, "depth_min"),
+        depth_max=_number(raw, "depth_max"),
+        depth_median=_number(raw, "depth_median"),
+        width=_integer(raw, "width"),
+        height=_integer(raw, "height"),
+    )
+
+
+def _present_object(raw: Mapping[str, Any], key: str) -> Optional[Mapping[str, Any]]:
+    """An object or null, the key present."""
+    if key not in raw:
+        raise _Malformed(key)
+    value = raw[key]
+    if value is not None and not isinstance(value, Mapping):
+        raise _Malformed(key)
+    return value
+
+
+def _segment_instance(e: Mapping[str, Any]) -> SegmentInstance:
+    opening = _present_object(e, "opening")
+    depth = _present_object(e, "depth")
+    size = _present_object(e, "size_m")
+    extent = None if size is None else _present_object(size, "opening")
+    return SegmentInstance(
+        label=_string(e, "label"),
+        score=_number(e, "score"),
+        box=_numbers(e.get("box"), "box", 4),
+        polygon=_points(e.get("polygon"), "polygon"),
+        area=_number(e, "area"),
+        centroid=_numbers(e.get("centroid"), "centroid", 2),
+        opening=None
+        if opening is None
+        else SegmentOpening(
+            polygon=_points(opening.get("polygon"), "polygon"),
+            centroid=_numbers(opening.get("centroid"), "centroid", 2),
+            width=_number(opening, "width"),
+            height=_number(opening, "height"),
+            offset=_numbers(opening.get("offset"), "offset", 2),
+            area=_number(opening, "area"),
+        ),
+        depth=None
+        if depth is None
+        else SegmentDepth(
+            median=_nullable(depth, "median"),
+            opening_median=_nullable(depth, "opening_median"),
+            opening_rim_median=_nullable(depth, "opening_rim_median"),
+        ),
+        size_m=None
+        if size is None
+        else SegmentSize(
+            width=_number(size, "width"),
+            height=_number(size, "height"),
+            opening=None if extent is None else SegmentExtent(_number(extent, "width"), _number(extent, "height")),
+        ),
+    )
+
+
+def _segment(raw: Dict[str, Any]) -> SegmentReading:
+    prompts = _list(raw, "prompts")
+    if not all(isinstance(p, str) for p in prompts):
+        raise _Malformed("prompts")
+    if "depth_source" not in raw:
+        raise _Malformed("depth_source")
+    return SegmentReading(
+        image=_string(raw, "image"),
+        raw=raw,
+        width=_integer(raw, "width"),
+        height=_integer(raw, "height"),
+        prompts=list(prompts),
+        instances=[_segment_instance(e) for e in _entries(raw, "instances")],
+        depth_source=_optional_string(raw, "depth_source"),
+        assumed_hfov_deg=_number(raw, "assumed_hfov_deg"),
+    )
+
+
 _READERS: Dict[str, Callable[[Dict[str, Any]], AnyReading]] = {
     "age": _age,
     "ai_generated": _ai_generated,
     "ocr": _ocr,
     "face_detection": _face_detection,
     "face_recognition": _face_recognition,
+    "bynn_depth": _depth,
+    "bynn_segment": _segment,
 }
 
 

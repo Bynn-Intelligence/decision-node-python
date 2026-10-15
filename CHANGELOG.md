@@ -4,6 +4,23 @@ All notable changes to this package are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `DepthReading`, a reading of the `bynn_depth` booster (Depth Vision): `ahead`,
+  `directions`, `ground`, `grid_rows`, `grid_cols`, `grid`, `depth_min`, `depth_max`,
+  `depth_median`, `width` and `height`, in meters and pixels as sent.
+- `SegmentReading`, a reading of the `bynn_segment` booster (Segment Vision): `width`,
+  `height`, `prompts`, `instances` (each a `SegmentInstance` with `label`, `score`, `box`,
+  `polygon`, `area`, `centroid`, `opening` as a `SegmentOpening`, `depth` as a
+  `SegmentDepth` and `size_m` as a `SegmentSize` with its `SegmentExtent`), `depth_source`
+  and `assumed_hfov_deg`. A reading with a field missing or of the wrong type stays an
+  `UnknownReading`.
+- The README lists every booster the API serves, `face_detection`, `face_recognition`,
+  `ocr`, `bynn_depth` and `bynn_segment` beside `age` and `ai_generated`, with their
+  options and readings.
+
 ## [0.3.3] - 2026-10-14
 
 Implements version 1.3 of the SDK specification (`SPEC_VERSION` is `"1.3"`) and passes

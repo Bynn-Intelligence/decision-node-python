@@ -365,6 +365,11 @@ answered exactly as before.
 |---|---|---|
 | `age` | A picture of a person | How old the person is, with a range and a confidence (the largest face is read) |
 | `ai_generated` | Any picture | How likely the picture was made by an image generator, which generator most likely, and whether the file carries Content Credentials (C2PA) and who signed them |
+| `face_detection` | Any picture | How many faces the picture shows and where, a box and a confidence for each |
+| `face_recognition` | A picture of a person | Which faces match the collection the request names (see Collections): a box, a score and the matched item's reference for each |
+| `ocr` | Any picture | The picture's text, whole, or what the booster's `prompt` asks for |
+| `bynn_depth` (Depth Vision) | Any picture | How far away things are, in meters: the nearest obstacle straight ahead, seven directions from left to right, and a grid of the picture |
+| `bynn_segment` (Segment Vision) | Any picture | Where the things you name in words are: each one's outline, box and centre, and with depth on, its distance and size in meters |
 
 ```python
 from decisionnode import Image, truth
@@ -413,6 +418,35 @@ It is sent as `{"name": "ai_generated", "images": ["c3d4"], "require": true}`, e
 only when given; a plain mapping in that form works too. A `Booster` with no setting is sent
 as its name, so the request stays the plain list.
 
+| Booster | `options` |
+|---|---|
+| `face_recognition` | `collection` (required): `celebrities`, or the id of one of your collections; `threshold`, 0 to 1 (0.5): a face scored below it is no match |
+| `ocr` | `prompt`: the model's instruction, at most 2,000 characters; left out, all the visible text |
+| `bynn_depth` | `grid_size`: the grid's cells per side, 2 to 16 (8) |
+| `bynn_segment` | `prompt` (required): what to find, one phrase as a string or 1 to 4 phrases as a list, each at most 120 characters; `max_instances`, 1 to 16 (8); `min_score`, 0 to 1 (0.25); `polygon_points`, the points of each outline, 3 to 64 (24); `depth`, distances and sizes in meters (`True`) |
+
+```python
+d = dn.decide(
+    images=[Image("cam", url="https://files.example.com/drone/frame-0412.jpg")],
+    boosters=[
+        Booster("bynn_depth", options={"grid_size": 8}),
+        Booster("bynn_segment", options={"prompt": ["landing pad", "person"]}),
+    ],
+    questions={"clear": truth("Is the landing pad clear of people?")},
+)
+
+depth = d.evidence["bynn_depth"].results[0]
+depth.ahead, depth.directions[3], depth.ground  # 3.21, 2.81, True
+for found in d.evidence["bynn_segment"].results[0].instances:
+    print(found.label, found.score, found.centroid, found.depth and found.depth.median)
+```
+
+`bynn_segment`'s `prompt` as a string is always one phrase; send several as a list.
+Descriptive phrases match better than short names: "purple octagonal frame on a pole" finds
+what "purple gate" may not. Each picture it reads is one booster call, its depth included.
+Depth Vision's and Segment Vision's distances are estimates from one picture, for decisions
+and planning, never a safety stop: a robot or a drone uses stereo cameras or LiDAR for that.
+
 The client checks nothing about boosters itself: the API answers a malformed list, an
 unknown name and a booster turned off for your workspace before any booster runs and
 before any charge. A booster added to the API works with this version of the package.
@@ -436,6 +470,11 @@ requests.
 |---|---|
 | `AgeReading` | `image`, `faces` (how many faces were found; the largest is read), and `age_years`, `low`, `high`, `confidence`, each `None` when `faces` is 0 |
 | `AiGeneratedReading` | `image`, `generated` (the probability that a generator made the picture), `confidence`, `method` (`inference`: read from the pixels; `c2pa`: the file's trusted Content Credentials declare it generated or edited by AI), `top_generator` (`name`, `probability` of the likeliest generator when the reading says likely generated; `None` otherwise, and always on a `c2pa` reading), `c2pa_signer` (who signed the file's Content Credentials when they are trusted, else `None`), `c2pa` (`untrusted` when the file carries Content Credentials that validate but are not trusted, which change nothing in the reading; else `None`) |
+| `FaceDetectionReading` | `image`, `faces` (how many faces the picture shows; 0 is a reading), `detections` (at most 64, each a `FaceDetection`: `box`, a `FaceBox` with the corners `x1`, `y1`, `x2`, `y2` in the request's units, and `confidence`) |
+| `FaceRecognitionReading` | `image`, `faces` (how many faces were searched), `matches` (best first, each a `FaceMatch`: `box`, `score`, `collection`, `reference`, `name` for a public figure, `label` and `metadata` for your own item, `collection_name`), `collection_name` (your collection's name) |
+| `OcrReading` | `image`, `text` (the reading; empty when the picture shows no text), `truncated` (`True` when the reading was cut at the model's context limit) |
+| `DepthReading` | `image`, `ahead` (meters to the nearest obstacle straight ahead, the floor left out; `None` when none is found), `directions` (7 entries, left to right, each meters or `None`), `ground` (whether a floor or ground was found and left out), `grid_rows`, `grid_cols`, `grid` (rows of meters from the top left), `depth_min`, `depth_max`, `depth_median`, `width`, `height` (the picture's size in pixels) |
+| `SegmentReading` | `image`, `width`, `height`, `prompts` (the phrases searched for), `instances` (best first, each a `SegmentInstance`: `label`, `score`, `box` `[x1, y1, x2, y2]`, `polygon` `[[x, y], ...]`, `area`, `centroid` `[x, y]`, `opening` (a `SegmentOpening` for the hole of a gate, a doorway or a ring, or `None`), `depth` (a `SegmentDepth`: `median`, `opening_median`, `opening_rim_median`) and `size_m` (a `SegmentSize` in meters: `width`, `height`, `opening`), both `None` with depth off), `depth_source`, `assumed_hfov_deg`. Coordinates are fractions of the picture from its top left |
 | `UnknownReading` | `image` and `raw`: a reading of a booster this version does not know, or one with a field missing or of the wrong type. The decision does not fail |
 
 Booster calls are billed from your prepaid balance with the request's tokens, one per
