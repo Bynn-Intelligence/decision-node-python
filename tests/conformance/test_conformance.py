@@ -344,9 +344,54 @@ def norm_reading(r: Any) -> Dict[str, Any]:
                 for m in r.matches
             ],
         }
+    if isinstance(r, dn.DepthReading):
+        fields = ("image", "ahead", "directions", "ground", "grid_rows", "grid_cols", "grid")
+        fields += ("depth_min", "depth_max", "depth_median", "width", "height")
+        return dict({"kind": "bynn_depth"}, **{n: getattr(r, n) for n in fields})
+    if isinstance(r, dn.SegmentReading):
+        fields = ("image", "width", "height", "prompts", "depth_source", "assumed_hfov_deg")
+        return dict(
+            {"kind": "bynn_segment"},
+            **{n: getattr(r, n) for n in fields},
+            instances=[norm_instance(i) for i in r.instances],
+        )
     if not isinstance(r, dn.UnknownReading):
         raise Fail("reading of class %s is none of the reading types" % type(r).__name__)
     return {"kind": "unknown", "raw": r.raw}
+
+
+def norm_instance(i: Any) -> Dict[str, Any]:
+    """A Segment Vision match as the cases write it: the wire's fields and shapes, an empty
+    opening, depth or size_m (and the size's opening) as null."""
+    o, d, s = i.opening, i.depth, i.size_m
+    return {
+        "label": i.label,
+        "score": i.score,
+        "box": i.box,
+        "polygon": i.polygon,
+        "area": i.area,
+        "centroid": i.centroid,
+        "opening": None
+        if o is None
+        else {
+            "polygon": o.polygon,
+            "centroid": o.centroid,
+            "width": o.width,
+            "height": o.height,
+            "offset": o.offset,
+            "area": o.area,
+        },
+        "depth": None
+        if d is None
+        else {"median": d.median, "opening_median": d.opening_median, "opening_rim_median": d.opening_rim_median},
+        "size_m": None
+        if s is None
+        else {
+            "width": s.width,
+            "height": s.height,
+            "opening": None if s.opening is None else {"width": s.opening.width, "height": s.opening.height},
+        },
+    }
 
 
 def norm_evidence(evidence: Any) -> Optional[Dict[str, Any]]:
