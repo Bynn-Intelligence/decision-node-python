@@ -370,6 +370,7 @@ answered exactly as before.
 | `ocr` | Any picture | The picture's text, whole, or what the booster's `prompt` asks for |
 | `bynn_depth` (Depth Vision) | Any picture | How far away things are, in meters: the nearest obstacle straight ahead, seven directions from left to right, and a grid of the picture |
 | `bynn_segment` (Segment Vision) | Any picture | Where the things you name in words are: each one's outline, box and centre, and with depth on, its distance and size in meters |
+| `knowledge` (Knowledge) | The request's state and questions, never a picture | The passages of your own documents, in a knowledge base, that apply to the request: pinned rules always, then the best-matching passages (see Knowledge) |
 
 ```python
 from decisionnode import Image, truth
@@ -423,6 +424,7 @@ as its name, so the request stays the plain list.
 | `face_recognition` | `collection` (required): `celebrities`, or the id of one of your collections; `threshold`, 0 to 1 (0.5): a face scored below it is no match |
 | `ocr` | `prompt`: the model's instruction, at most 2,000 characters; left out, all the visible text |
 | `bynn_depth` | `grid_size`: the grid's cells per side, 2 to 16 (8) |
+| `knowledge` | `collection` (required), `query`, `scope`, `match`, `filter`, `top_k`, `max_tokens`, `pinned`, `min_score`, `include_text`: built by `knowledge(...)`, see Knowledge |
 | `bynn_segment` | `prompt` (required): what to find, one phrase as a string or 1 to 4 phrases as a list, each at most 120 characters; `max_instances`, 1 to 16 (8); `min_score`, 0 to 1 (0.25); `polygon_points`, the points of each outline, 3 to 64 (24); `depth`, distances and sizes in meters (`True`) |
 
 ```python
@@ -475,6 +477,7 @@ requests.
 | `OcrReading` | `image`, `text` (the reading; empty when the picture shows no text), `truncated` (`True` when the reading was cut at the model's context limit) |
 | `DepthReading` | `image`, `ahead` (meters to the nearest obstacle straight ahead, the floor left out; `None` when none is found), `directions` (7 entries, left to right, each meters or `None`), `ground` (whether a floor or ground was found and left out), `grid_rows`, `grid_cols`, `grid` (rows of meters from the top left), `depth_min`, `depth_max`, `depth_median`, `width`, `height` (the picture's size in pixels) |
 | `SegmentReading` | `image`, `width`, `height`, `prompts` (the phrases searched for), `instances` (best first, each a `SegmentInstance`: `label`, `score`, `box` `[x1, y1, x2, y2]`, `polygon` `[[x, y], ...]`, `area`, `centroid` `[x, y]`, `opening` (a `SegmentOpening` for the hole of a gate, a doorway or a ring, or `None`), `depth` (a `SegmentDepth`: `median`, `opening_median`, `opening_rim_median`) and `size_m` (a `SegmentSize` in meters: `width`, `height`, `opening`), both `None` with depth off), `depth_source`, `assumed_hfov_deg`. Coordinates are fractions of the picture from its top left |
+| `KnowledgeReading` | One result, not per picture: `collection`, `collection_name`, `corpus`, `query`, `budget`, `scope`, `warnings`, `passages` (each a `KnowledgePassage`), `omitted`, `pending_items`, `search`, `truncated`; see Knowledge |
 | `UnknownReading` | `image` and `raw`: a reading of a booster this version does not know, or one with a field missing or of the wrong type. The decision does not fail |
 
 Booster calls are billed from your prepaid balance with the request's tokens, one per
@@ -699,7 +702,8 @@ the catalogue's own entries these four are `None`.
 
 A collection holds faces your workspace enrolls, each with your own `reference`, an
 optional `label` and `metadata`, so a `face_recognition` booster can find them in the
-pictures of a decision. Every call returns the API's object as sent.
+pictures of a decision. A collection of type `text` is a knowledge base (see Knowledge).
+Every call returns the API's object as sent.
 
 ```python
 col = dn.collections.create("Staff")
@@ -716,7 +720,7 @@ page = dn.collections.list_items(col["id"], reference_prefix="employee-")
 
 | Call | |
 |---|---|
-| `create(name, type="face")`, `list()`, `get(collection_id)`, `delete(collection_id)` | The workspace's collections; `list()` also shows the public ones it may use |
+| `create(name, type="face", scope_key=None)`, `list()`, `get(collection_id)`, `delete(collection_id)` | The workspace's collections; `list()` also shows the public ones it may use. `type="text"` makes a knowledge base |
 | `enroll(collection_id, image, reference, label=None, metadata=None)` | One face from one image, sent as a decision's image is |
 | `update_item(collection_id, item_id, reference=..., label=..., metadata=...)` | Sends only the fields given: `label=None` clears the label, `metadata` replaces the whole object |
 | `list_items(collection_id, offset=None, limit=None, reference=None, reference_prefix=None)` | A page of items; with `reference` or `reference_prefix` (not both) only the matching ones |
@@ -727,6 +731,156 @@ characters. `metadata` is an object of up to 20 keys, each 1 to 40 of `a-z`, `0-
 whose values are texts of up to 500 characters, numbers or `True`/`False`. These are checked
 before anything is sent. `create`, `enroll` and `update_item` send an `Idempotency-Key`, the
 same on every attempt of a call, so a retried call creates, enrolls or edits once.
+
+## Knowledge
+
+A knowledge base holds your own documents, a claims policy, house rules, a mission's
+special instructions, and the `knowledge` booster gives a decision the passages that apply
+to it as facts and rules to apply. It is a collection of type `text`.
+
+```python
+from decisionnode import Document, DecisionNode, knowledge, truth
+
+dn = DecisionNode()
+kb = dn.collections.create("Claims policy", type="text", scope_key="mission")
+
+# A Markdown rule, inline and pinned: it is given to every decision.
+dn.collections.add_document(
+    kb["id"],
+    "# Receipts\n\nReject any claim over 500 SEK without a receipt.",
+    title="Receipt rule",
+    reference="receipt-rule",
+    pinned=True,
+)
+# A PDF from a path, uploaded and converted to text.
+policy = dn.collections.add_document(kb["id"], Document(path="claims-policy-2026.pdf"))
+# A mission's own instructions, scoped by the scope key in its metadata.
+dn.collections.add_document(
+    kb["id"],
+    Document("Photos taken after 2026-09-01 count as current.", format="text"),
+    title="Mission M-42 brief",
+    metadata={"mission": "M-42"},
+)
+
+dn.collections.wait_until_ready(kb["id"])  # every document read
+
+d = dn.decide(
+    state={"claim": {"amount": "740.00", "currency": "SEK", "receipt": False}},
+    questions={"approve": truth("Should the claim be approved under our policy?")},
+    boosters=[knowledge(kb["id"], scope="M-42", require=True)],
+)
+reading = d.evidence["knowledge"].results[0]
+for p in reading.passages:
+    print(p.n, p.pinned, p.title, p.heading, p.score)  # 1 True Receipt rule Receipts None
+```
+
+Documents are read in the background: an added document is `queued`, then `processing`,
+then `ready` or `failed`. `add_document(..., wait=True)` has the API hold the call up to
+10 seconds and answer once the document is ready (else as it stands), and
+`wait_until_ready(collection_id, item_id=None, timeout=300, poll_interval=1)` reads the
+document, or without `item_id` the knowledge base, until it is done; a failed document is
+returned with its `error`, never raised. Past `timeout` it raises `TimeoutError`.
+
+A document is a `Document`, or Markdown text:
+
+| Form | |
+|---|---|
+| `"# Markdown"` or `Document(text, format="markdown")` | Text held in memory; `format="text"` for plain text. Needs a `title` |
+| `Document(path=...)` | A file, read when the call is made |
+| `Document(data=..., filename=None, content_type=None)` | The file's bytes |
+| `Document(stream=..., filename=None, content_type=None)` | A file object opened in binary mode, read to its end before anything is sent |
+| `Document(upload_id=...)` | A file uploaded before with `upload_documents` |
+
+A file is a PDF, DOCX, PPTX, XLSX, HTML, text, Markdown, PNG, JPEG, TIFF or WebP file, at
+most 50 MB, a PDF at most 100 pages, and its text at most 512 KiB once extracted. Its type
+comes from `content_type`, else the file name's extension, else its first bytes; DOCX,
+PPTX, XLSX and text given as bytes or a stream need a `filename` or a `content_type`. A
+small text or Markdown file is sent inline as text; every other file is uploaded first
+(one `POST /v1/uploads`, then a `PUT` straight to storage, 120 seconds per attempt unless
+you set `upload_timeout`), then converted to text. Only the text is kept once the document
+is ready: the original file is deleted. A file's title is its file name without the
+extension unless you give one. `upload_documents(documents)` uploads 1 to 16 documents
+ahead and returns their upload ids, for `Document(upload_id=...)` within the hour.
+Knowledge uploads need a full-scope key.
+
+**Pin a rule that must always apply.** A pinned document (`pinned=True`, ordered by
+`pin_rank`, lowest first) is given to every decision that names the knowledge base; the
+others compete for the passages by how well they match. **Scope a mission's documents**
+with the knowledge base's `scope_key`: a document whose `metadata` holds a value for it
+belongs to that value, and a decision naming `scope="M-42"` sees the global documents and
+M-42's, never another mission's.
+
+| Call | |
+|---|---|
+| `add_document(collection_id, document, title=None, reference=None, pinned=None, pin_rank=None, label=None, metadata=None, wait=False)` | Adds a document; returns its item |
+| `replace_document(collection_id, item_id, document, ...)` | Replaces it whole: a new version, the old one serving until it is ready. The same text again is free |
+| `update_item(collection_id, item_id, reference=..., label=..., metadata=..., pinned=..., pin_rank=..., title=...)` | Changes only the fields given, at once and free; a new `title` makes a new version |
+| `get_item(collection_id, item_id, include_text=False)` | The document; with `include_text`, its stored `text` |
+| `list_items(collection_id, ...)`, `list_chunks(collection_id, item_id, offset=None, limit=None)` | The documents, and a document's chunks with their headings, byte offsets and text |
+| `delete_item(collection_id, item_id)`, `delete_failed(collection_id)` | Deletes one document, or every failed one |
+| `search(collection_id, query, scope=None, match=None, filter=None, top_k=None, pinned=None, max_tokens=None)` | The passages a decision would get, with their text, without a decision: a `KnowledgeReading` |
+| `wait_until_ready(collection_id, item_id=None, timeout=300, poll_interval=1)` | Waits for a document, or every document, to be read |
+
+`add_document`, `replace_document` and `update_item` send an `Idempotency-Key`, the same on
+every attempt of a call, so a retried call adds, replaces or bills once. A `title` is 1 to
+200 characters, a `pin_rank` 0 to 1,000; these, the `reference`, `label` and `metadata`
+rules of Collections, a file's type and size, and an empty text are checked before
+anything is sent.
+
+`knowledge(collection, query=None, scope=None, match=None, filter=None, top_k=None,
+max_tokens=None, pinned=None, min_score=None, include_text=None, require=False)` writes the
+booster, each option only when given:
+
+| Option | |
+|---|---|
+| `collection` | The knowledge base's `col_` id (required) |
+| `query` | Replaces the automatic query, which is every question's instructions, then the state |
+| `scope` | The scope key's value to search beside the global documents |
+| `match`, `filter` | Metadata conditions: `{"region": "SE"}`, or a filter tree |
+| `top_k` | The most passages retrieved, pinned documents not counted (4; 0 is pinned only) |
+| `max_tokens` | The passages' token budget, `"auto"` (the default) or 128 to 8,192 |
+| `pinned` | `False` leaves the pinned documents out |
+| `min_score` | A similarity floor, 0 to 1, for passages found by meaning alone |
+| `include_text` | Adds each passage's text to the reading (a full-scope key) |
+| `require` | `True`: the decision fails rather than run without the passages |
+
+A `KnowledgeReading` holds `collection`, `collection_name`, `corpus` (`version`), `query`
+(`source`, `tokens`, `text`), `budget` (`mode`, `tokens`, `entry`, `cause`), `scope` (`key`,
+`value`), `warnings` (such as `scope_not_named`), `passages`, `omitted` (counts by cause),
+`pending_items`, `search` and `truncated`. Each `KnowledgePassage` cites its source: `n`
+(its number in what the model read), `pinned`, `item`, `reference`, `title`, `heading`,
+`chunk`, `byte_start`, `byte_end`, `tokens`, `score` (`None` for a pinned passage),
+`lexical`, `rendered` and, with `include_text` or from `search`, `text`. `byte_start` and
+`byte_end` are UTF-8 byte offsets, end exclusive, into the document's stored text, so slice
+its bytes, not the string:
+
+```python
+doc = dn.collections.get_item(kb["id"], p.item, include_text=True)
+quote = doc["text"].encode("utf-8")[p.byte_start : p.byte_end].decode("utf-8")
+```
+
+Try a query without a decision:
+
+```python
+found = dn.collections.search(kb["id"], "claims without a receipt", scope="M-42", top_k=3)
+for p in found.passages:
+    print(p.title, p.text)
+```
+
+A knowledge call, on a decision or a search, costs USD 0.001, one a request whatever it
+retrieves; ingestion and storage are priced per token and per chunk on the
+[pricing page](https://decisionnode.com/docs/pricing#boosters).
+
+| Status | `error_type` | Exception |
+|---|---|---|
+| 409 | `knowledge_collection_empty`: `require=True` on a knowledge base with nothing ready and nothing being read; `details` `items`, `failed` | `DecisionNodeError` with `status` 409 |
+| 529 | `booster_unavailable`: `require=True` while no document is ready yet (`Retry-After: 5`) | `OverloadedError`, retried |
+| 529 | `booster_unavailable` with `details["reason"]` `ingestion_delayed`: reading documents is delayed (`Retry-After: 60`) | `OverloadedError`, raised at once |
+| 429 | `rate_limit_error` with `details["reason"]` `ingest_queue_full` or `ingest_tokens_per_hour`: too many documents waiting or read this hour | `RateLimitError`, retried after its `Retry-After` |
+| 413 | `item_too_large`: a text over 512 KiB once normalised | `RequestTooLargeError` |
+| 422 | `invalid_text`: a text that is not UTF-8 or holds a NUL | `ValidationError` |
+| 400 | `collection_type_mismatch`: a face collection named as a knowledge base, or the reverse | `BadRequestError` |
+| 400 | `upload_purpose_mismatch`: an image upload named as a document, or the reverse | `BadRequestError` |
 
 ## Device keys
 
@@ -949,7 +1103,9 @@ unless you set a timeout; see Boosters). The timeout covers the whole attempt, f
 sending the request to the last byte of the response body, so a server that answers
 slowly a little at a time cannot hold a call longer than that. A storage `PUT` of an
 image has its own deadline for the whole attempt, `upload_timeout` (60 seconds by
-default), since up to 10 MB may need longer than an answer does. Batch results are read
+default, 120 for a knowledge file unless you set it), since up to 10 MB may need longer
+than an answer does. A document written with `wait=True` waits 20 seconds per attempt
+unless you set a timeout. Batch results are read
 from the network line by line as you iterate them, each read bounded by the timeout, so a
 file of any size is read whole. A failed request is retried twice on 408, 429,
 any 5xx (529 included), a timeout or a dropped connection; a request naming `ocr` is not
@@ -959,7 +1115,8 @@ when the server sends it, else `Retry-After` in seconds or as an HTTP date, capp
 jitter, capped at 8 seconds. A 408 still failing after its retries raises
 `DecisionNodeError` with `status` 408. 400, 401, 402, 403, 404 and
 422 are never retried: the same request would fail again. Nor is a 429
-`key_spend_cap_reached`: the key's cap resets at 00:00 UTC, so it is raised at once. A decision changes nothing on
+`key_spend_cap_reached`: the key's cap resets at 00:00 UTC, so it is raised at once; nor a
+529 whose `details["reason"]` is `ingestion_delayed` (see Knowledge). A decision changes nothing on
 the server, so a retry is always safe.
 
 ```python

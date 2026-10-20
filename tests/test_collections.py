@@ -301,9 +301,9 @@ def test_create_checks(mode: str) -> None:
         {
             "type": "literal_error",
             "loc": ["body", "type"],
-            "msg": "Input should be 'face'",
+            "msg": "Input should be 'face' or 'text'",
             "input": "plate",
-            "ctx": {"expected": "'face'"},
+            "ctx": {"expected": "'face' or 'text'"},
         }
     ]
     assert local_entries(mode, "create", name="") == [

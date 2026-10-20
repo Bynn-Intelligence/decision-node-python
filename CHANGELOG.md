@@ -6,8 +6,57 @@ All notable changes to this package are listed here. The format follows
 
 ## [Unreleased]
 
-Passes conformance suite 1.22, whose Segment Vision cases record an opening's offset from
-the centre of the match's box; the readings keep the offset as sent.
+Implements version 1.4 of the SDK specification (`SPEC_VERSION` is `"1.4"`), knowledge,
+and passes conformance suite 1.25. Suite 1.22's Segment Vision cases record an opening's
+offset from the centre of the match's box; the readings keep the offset as sent.
+
+### Added
+
+- Knowledge bases, collections of type `text`: `collections.create(name, type="text",
+  scope_key=None)`, the scope key checked before sending (`^[a-z0-9_]{1,40}$`). A knowledge
+  base's object (`scope_key`, `chunks`, `tokens`, `version`, `status_counts`, `pinned`) and
+  a purging delete (`{"id", "status": "purging"}`) are returned as sent.
+- `Document`: Markdown or plain text, a file from a path, bytes or a binary stream (read
+  to its end before anything is sent), or an earlier upload by `upload_id`. A file's type
+  comes from `content_type`, its file name's extension, or its first bytes (PDF, PNG,
+  JPEG, TIFF, WebP).
+- `collections.add_document` and `collections.replace_document` (`title`, `reference`,
+  `pinned`, `pin_rank`, `label`, `metadata`, `wait`), each with an `Idempotency-Key`. A
+  text, and a UTF-8 text or Markdown file under the inline threshold (titled by its file
+  name's stem), go inline; every other file is uploaded with the knowledge purpose
+  (`POST /v1/uploads` with `purpose` and `filename`, then the storage `PUT`, 120 s an
+  attempt unless `upload_timeout` is set) and named by `upload_id`. An upload of the
+  client's own that the API reports stale is uploaded again once and the item sent again
+  with a new `Idempotency-Key`; `upload_purpose_mismatch` is raised at once. `wait=True`
+  sends `?wait=true` and waits 20 s an attempt unless a timeout is set.
+- `upload_documents(documents)`: 1 to 16 documents uploaded ahead, their upload ids in
+  order. Knowledge uploads are never cached; `upload(images)` is unchanged and sends no
+  `purpose`.
+- `collections.update_item` takes a document's `pinned`, `pin_rank` and `title`;
+  `collections.get_item` (with `include_text`), `collections.list_chunks`,
+  `collections.delete_failed` and `collections.search`, which returns a
+  `KnowledgeReading`.
+- `collections.wait_until_ready(collection_id, item_id=None, timeout=300,
+  poll_interval=1)`: reads a document until it is `ready` or `failed` (a failed document is
+  returned), or a knowledge base until nothing is queued or processing; the wait grows 1.5
+  times a read up to 10 s, and `TimeoutError` is raised past `timeout`.
+- `knowledge(collection, ...)`, the `knowledge` booster with its options, each sent only
+  when given, and `require`.
+- `KnowledgeReading` (`collection`, `collection_name`, `corpus`, `query`, `budget`,
+  `scope`, `warnings`, `passages`, `omitted`, `pending_items`, `search`, `truncated`, its
+  objects as sent) with each `KnowledgePassage`. A reading or a passage with a required
+  field missing or of the wrong type is an `UnknownReading`.
+- Checked before sending, with the API's 422 entries: a title (1 to 200 characters once
+  trimmed, required with a text), an empty text, `format`, and a document's `reference`,
+  `pin_rank` (0 to 1,000), `label`, `metadata` and `pinned`; a file that is empty, over
+  50 MB, or not of a knowledge type is the presign's `api_usage_error`, and a file whose
+  type cannot be told is a `ValueError`.
+
+### Changed
+
+- A collection `type` other than `face` or `text` is refused with "Input should be 'face'
+  or 'text'".
+- A 529 whose `details.reason` is `ingestion_delayed` is raised at once, never retried.
 
 ## [0.3.4] - 2026-10-15
 

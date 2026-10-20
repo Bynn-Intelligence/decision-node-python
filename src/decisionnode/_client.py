@@ -47,9 +47,24 @@ from ._batches import (
     poll_wait,
     split_lines,
 )
-from ._boosters import BoosterInput, booster_wire, names_ocr
+from ._boosters import BoosterInput, KnowledgeReading, UnknownReading, booster_wire, names_ocr, parse_knowledge
 from ._errors import BadRequestError, ConnectionError, DecisionNodeError, ServerError, TimeoutError
 from ._images import Image
+from ._knowledge import (
+    DocumentFile,
+    DocumentInput,
+    DocumentPlan,
+    aread_document,
+    as_document,
+    check_wait,
+    is_done,
+    knowledge_presign_body,
+    next_interval,
+    plan_document,
+    read_document,
+    upload_file,
+    wait_query,
+)
 from ._questions import Question
 from ._questions import choice as _choice
 from ._questions import number as _number
@@ -329,12 +344,98 @@ def _items_query(offset: Any, limit: Any, reference: Any, reference_prefix: Any)
 
 
 def _item_update(reference: Any, label: Any, metadata: Any) -> bytes:
-    check_item_update(reference, label, metadata, UNSET)
+    check_item_update(reference, label, metadata, UNSET, UNSET, UNSET, UNSET)
     body: Dict[str, Any] = {}
     for name, value in (("reference", reference), ("label", label), ("metadata", metadata)):
         if value is not UNSET:
             body[name] = value
     return _base.encode(body)
+
+
+def _text_update(reference: Any, label: Any, metadata: Any, pinned: Any, pin_rank: Any, title: Any) -> bytes:
+    """An item's edit with a text item's fields: only those given, ``label=None`` sent as
+    null (it clears)."""
+    check_item_update(reference, label, metadata, UNSET, pinned, pin_rank, title)
+    body: Dict[str, Any] = {}
+    for name, value in (
+        ("reference", reference),
+        ("label", label),
+        ("metadata", metadata),
+        ("pinned", pinned),
+        ("pin_rank", pin_rank),
+        ("title", title),
+    ):
+        if value is not UNSET:
+            body[name] = value
+    return _base.encode(body)
+
+
+def _document_fields(reference: Any, pinned: Any, pin_rank: Any, label: Any, metadata: Any) -> Dict[str, Any]:
+    """A document's item fields in the body's order; ``None`` is left out."""
+    return {"reference": reference, "pinned": pinned, "pin_rank": pin_rank, "label": label, "metadata": metadata}
+
+
+def _is_file(doc: Any) -> bool:
+    return doc.text is None and doc.upload_id is None
+
+
+def _document_list(documents: Any) -> List[Any]:
+    """The documents of ``upload_documents``: one presign takes 1 to 16 files, so more is
+    that call's own 400, raised before anything is sent."""
+    if isinstance(documents, (str, bytes)) or not isinstance(documents, Iterable):
+        docs = [documents]
+    else:
+        docs = list(documents)
+    if not 1 <= len(docs) <= MAX_UPLOAD_FILES:
+        raise usage_error("files: 1 to %d files, got %d." % (MAX_UPLOAD_FILES, len(docs)))
+    return [as_document(d) for d in docs]
+
+
+def _search_body(
+    query: Any,
+    scope: Any,
+    match: Any,
+    filter: Any,
+    top_k: Any,
+    pinned: Any,
+    max_tokens: Any,  # noqa: A002
+) -> bytes:
+    """A search's body: each argument only when given, as given, for the API to judge."""
+    body: Dict[str, Any] = {}
+    for name, value in (
+        ("query", query),
+        ("scope", scope),
+        ("match", match),
+        ("filter", filter),
+        ("top_k", top_k),
+        ("pinned", pinned),
+        ("max_tokens", max_tokens),
+    ):
+        if value is not None:
+            body[name] = value
+    return _base.encode(body)
+
+
+def _write_timeout(settings: Settings, query: Any) -> Optional[float]:
+    """A document write with ``wait`` waits WAIT_TIMEOUT an attempt, unless the caller
+    set a timeout."""
+    if query is None or settings.timeout_given:
+        return None
+    return _base.WAIT_TIMEOUT
+
+
+def _document_put_timeout(settings: Settings) -> float:
+    """A knowledge file's PUT: the caller's ``upload_timeout``, else 120 s."""
+    return settings.upload_timeout if settings.upload_timeout_given else _base.DOCUMENT_UPLOAD_TIMEOUT
+
+
+def _not_ready(item: bool, limit: float) -> TimeoutError:
+    what = "the document" if item else "the collection's documents"
+    return TimeoutError("%s did not finish within %ss" % (what, "%g" % limit))
+
+
+def _wait_path(collection_id: Any, item_id: Any) -> str:
+    return _collection_path(collection_id) if item_id is None else _item_path(collection_id, item_id)
 
 
 # A request's query: a mapping, or name and value pairs where a name repeats.
@@ -895,7 +996,7 @@ class DecisionNode(_Common):
         http_client: Optional[httpx.Client] = None,
         inline_threshold: Optional[int] = None,
         http2: bool = False,
-        upload_timeout: Optional[float] = _base.DEFAULT_UPLOAD_TIMEOUT,
+        upload_timeout: Optional[float] = None,
     ) -> None:
         self._settings = Settings(
             api_key, base_url, model, timeout, max_retries, headers, inline_threshold, upload_timeout
@@ -995,9 +1096,10 @@ class DecisionNode(_Common):
         content_type: str = "application/json",
         query: Optional[Query] = None,
         extra_headers: Optional[Mapping[str, str]] = None,
+        timeout: Optional[float] = None,
     ) -> Tuple[int, Dict[str, str], Any]:
         status, headers, text = self._send(
-            method, path, content, policy, content_type, query, extra_headers=extra_headers
+            method, path, content, policy, content_type, query, timeout=timeout, extra_headers=extra_headers
         )
         return status, headers, _base.parse_json(status, headers, text)
 
@@ -1040,7 +1142,14 @@ class DecisionNode(_Common):
     # ---- uploads
 
     def _put(
-        self, img: Image, entry: Mapping[str, Any], presigned_at: float, url_ttl: float, may_presign: bool
+        self,
+        data: bytes,
+        what: str,
+        entry: Mapping[str, Any],
+        presigned_at: float,
+        url_ttl: float,
+        may_presign: bool,
+        timeout: float,
     ) -> None:
         """One storage PUT with exactly the presigned headers and the bytes: no key, none
         of the client's headers, no redirect followed."""
@@ -1054,16 +1163,14 @@ class DecisionNode(_Common):
                 "PUT",
                 entry["url"],
                 headers=entry["headers"],
-                content=img.data,
-                extensions={"timeout": httpx.Timeout(settings.upload_timeout).as_dict()},
+                content=data,
+                extensions={"timeout": httpx.Timeout(timeout).as_dict()},
             )
             try:
-                # Its own deadline, for the whole attempt: the upload_timeout.
-                response, raw = _Attempt(
-                    self._http, "PUT", entry["url"], None, {}, settings.upload_timeout, request=request
-                ).run()
+                # Its own deadline, for the whole attempt: the upload timeout.
+                response, raw = _Attempt(self._http, "PUT", entry["url"], None, {}, timeout, request=request).run()
             except (httpx.TransportError, TimeoutError) as exc:
-                error = _transport_error(exc, settings.upload_timeout) if isinstance(exc, httpx.TransportError) else exc
+                error = _transport_error(exc, timeout) if isinstance(exc, httpx.TransportError) else exc
                 _base.log_response("PUT", path, type(error).__name__, None, started, attempt)
                 retry = True
             else:
@@ -1075,7 +1182,7 @@ class DecisionNode(_Common):
                     return
                 if status == 403 and may_presign and self._clock() - presigned_at >= url_ttl:
                     raise UrlExpired()
-                error = storage_error(img.id, status, resp_headers, raw.decode("utf-8", errors="replace"))
+                error = storage_error(what, status, resp_headers, raw.decode("utf-8", errors="replace"))
                 retry = 500 <= status <= 599
             if not retry or attempt >= settings.max_retries:
                 raise error
@@ -1095,7 +1202,15 @@ class DecisionNode(_Common):
 
         def one(img: Image, entry: Mapping[str, Any]) -> None:
             try:
-                self._put(img, entry, presigned_at, url_ttl, may_presign)
+                self._put(
+                    img.data or b"",
+                    "image %r" % img.id,
+                    entry,
+                    presigned_at,
+                    url_ttl,
+                    may_presign,
+                    self._settings.upload_timeout,
+                )
             except UrlExpired:
                 expired.append(img)
                 return
@@ -1149,6 +1264,75 @@ class DecisionNode(_Common):
     def _frame_image(self, image: Any) -> Dict[str, Any]:
         plan = self._plan([image], strip_id=True)
         return self._finish(plan)[0]
+
+    def _upload_files(self, files: List[DocumentFile], may_presign: bool = True) -> List[str]:
+        """Knowledge files: one presign for all, then a PUT each, in parallel. Never
+        cached, since a knowledge upload is consumed by the item it makes."""
+        presign = _base.encode(knowledge_presign_body(files))
+        _, _, body = self._json("POST", _base.UPLOADS_PATH, presign)
+        entries = presigned_entries(body, len(files))
+        for entry in entries:
+            check_storage_url(entry["url"])
+        url_ttl = float(body.get("expires_in") or 300)
+        presigned_at = self._clock()
+        timeout = _document_put_timeout(self._settings)
+        ids = [entry["upload_id"] for entry in entries]
+        expired: List[int] = []
+        errors: List[BaseException] = []
+
+        def one(i: int) -> None:
+            try:
+                self._put(files[i].data, files[i].describe(), entries[i], presigned_at, url_ttl, may_presign, timeout)
+            except UrlExpired:
+                expired.append(i)
+            except BaseException as exc:  # handed to the caller below
+                errors.append(exc)
+
+        if len(files) == 1:
+            one(0)
+        else:
+            with ThreadPoolExecutor(max_workers=len(files), thread_name_prefix="decisionnode-put") as pool:
+                list(pool.map(one, range(len(files))))
+        if errors:
+            raise errors[0]
+        if expired:
+            # The URLs' minutes passed before the PUT: presign those once more.
+            expired.sort()
+            for i, upload_id in zip(expired, self._upload_files([files[i] for i in expired], may_presign=False)):
+                ids[i] = upload_id
+        return ids
+
+    def _write_document(
+        self, method: str, path: str, document: Any, title: Any, fields: Mapping[str, Any], wait: Any
+    ) -> Dict[str, Any]:
+        """Add or replace a document. A file is uploaded first unless it goes inline; a
+        stale reference to that upload is replaced once (upload again, send again with a
+        new Idempotency-Key, since the body changed), which is not a retry."""
+        query = wait_query(wait)
+        doc = as_document(document)
+        plan = plan_document(
+            doc, read_document(doc) if _is_file(doc) else None, title, fields, self._settings.inline_threshold
+        )
+        return cast(Dict[str, Any], self._send_document(method, path, plan, query))
+
+    def _send_document(self, method: str, path: str, plan: DocumentPlan, query: Any) -> Any:
+        timeout = _write_timeout(self._settings, query)
+        upload_id: Optional[str] = None
+        for attempt in (0, 1):
+            if plan.file is not None and upload_id is None:
+                upload_id = self._upload_files([plan.file])[0]
+            content = _base.encode(plan.body(upload_id))
+            try:
+                _, _, body = self._json(
+                    method, path, content, IDEMPOTENT, query=query, extra_headers=_idempotency_key(), timeout=timeout
+                )
+                return body
+            except BadRequestError as exc:
+                if attempt == 0 and plan.file is not None and exc.error_type in _base.STALE_UPLOAD:
+                    upload_id = None
+                    continue
+                raise
+        raise AssertionError("unreachable")
 
     # ---- decisions
 
@@ -1416,6 +1600,15 @@ class DecisionNode(_Common):
         ids = self._upload(local) if local else {}
         return [img.upload_id if img.data is None else ids[cache_key(img)] for img in imgs]
 
+    def upload_documents(self, documents: Sequence[DocumentInput]) -> List[str]:
+        """Upload 1 to 16 documents for knowledge bases whatever their type and size (a
+        text as Markdown or plain text by its format) and return the ``upload_id`` of
+        each, in order, for ``Document(upload_id=...)`` within the hour. Needs a
+        full-scope key."""
+        docs = _document_list(documents)
+        files = [upload_file(i, d, read_document(d) if _is_file(d) else None) for i, d in enumerate(docs)]
+        return self._upload_files(files)
+
     def decide_raw(self, body: Any) -> Any:
         """Send ``body`` to ``POST /v1/decide`` exactly as given and return the parsed response body.
 
@@ -1583,24 +1776,36 @@ class Batches:
 
 
 class Collections:
-    """Collections of faces, as ``dn.collections``: a workspace's own, and the public
-    ones it may search. Every call returns the API's object as sent.
+    """Collections, as ``dn.collections``: face collections (a workspace's own, and the
+    public ones it may search) and knowledge bases, collections of type ``text`` that hold
+    a workspace's documents for the ``knowledge`` booster. Every call returns the API's
+    object as sent.
 
-    ``create`` and ``enroll`` send an ``Idempotency-Key``, a new UUID per call and the
-    same on every attempt of it, so the API creates, enrolls and bills once however often
-    the call is tried; they then retry like any call, and also while the API reports the
-    first attempt still running. Reads and deletes carry no key.
+    ``create``, ``enroll``, ``add_document``, ``replace_document`` and ``update_item``
+    send an ``Idempotency-Key``, a new UUID per call and the same on every attempt of it,
+    so the API creates, enrolls, ingests and bills once however often the call is tried;
+    they then retry like any call, and also while the API reports the first attempt still
+    running. Reads, searches and deletes carry no key.
     """
 
     def __init__(self, client: DecisionNode) -> None:
         self._client = client
 
-    def create(self, name: str, type: str = "face") -> Dict[str, Any]:  # noqa: A002 - the API's field
-        """Create a collection of the workspace."""
-        check_collection(type, name)
-        content = _base.encode({"type": type, "name": name})
+    def create(
+        self,
+        name: str,
+        type: str = "face",  # noqa: A002 - the API's field
+        scope_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a collection of the workspace: ``type`` ``face`` (the default) or
+        ``text``, a knowledge base. ``scope_key`` (a knowledge base's only, fixed for its
+        life) names the metadata key whose value scopes a document, such as ``mission``."""
+        check_collection(type, name, scope_key)
+        fields: Dict[str, Any] = {"type": type, "name": name}
+        if scope_key is not None:
+            fields["scope_key"] = scope_key
         _, _, body = self._client._json(
-            "POST", _base.COLLECTIONS_PATH, content, IDEMPOTENT, extra_headers=_idempotency_key()
+            "POST", _base.COLLECTIONS_PATH, _base.encode(fields), IDEMPOTENT, extra_headers=_idempotency_key()
         )
         return cast(Dict[str, Any], body)
 
@@ -1615,7 +1820,9 @@ class Collections:
         return cast(Dict[str, Any], body)
 
     def delete(self, collection_id: str) -> Dict[str, Any]:
-        """Delete a collection and every item in it."""
+        """Delete a collection and every item in it. A knowledge base answers
+        ``{"id", "deleted": true}`` once purged, or ``{"id", "status": "purging"}`` while
+        the purge finishes in the background."""
         _, _, body = self._client._json("DELETE", _collection_path(collection_id), None)
         return cast(Dict[str, Any], body)
 
@@ -1668,12 +1875,20 @@ class Collections:
         reference: Any = UNSET,
         label: Any = UNSET,
         metadata: Any = UNSET,
+        pinned: Any = UNSET,
+        pin_rank: Any = UNSET,
+        title: Any = UNSET,
     ) -> Dict[str, Any]:
         """Edit an item, sending only the fields given: ``label=None`` clears the label,
-        and ``metadata`` replaces the item's whole object (``{}`` empties it). It carries
-        an ``Idempotency-Key`` and retries as ``enroll`` does."""
+        and ``metadata`` replaces the item's whole object (``{}`` empties it). A document
+        also takes ``pinned``, ``pin_rank`` and ``title``; each applies at once and is
+        never billed, except a new title, which makes a new version. It carries an
+        ``Idempotency-Key`` and retries as ``enroll`` does."""
         path = _item_path(collection_id, item_id)
-        content = _item_update(reference, label, metadata)
+        if pinned is UNSET and pin_rank is UNSET and title is UNSET:
+            content = _item_update(reference, label, metadata)
+        else:
+            content = _text_update(reference, label, metadata, pinned, pin_rank, title)
         _, _, body = self._client._json("PATCH", path, content, IDEMPOTENT, extra_headers=_idempotency_key())
         return cast(Dict[str, Any], body)
 
@@ -1681,6 +1896,129 @@ class Collections:
         """Delete one item of a collection."""
         _, _, body = self._client._json("DELETE", _item_path(collection_id, item_id), None)
         return cast(Dict[str, Any], body)
+
+    # ---- knowledge bases (collections of type text)
+
+    def add_document(
+        self,
+        collection_id: str,
+        document: DocumentInput,
+        title: Optional[str] = None,
+        reference: Optional[str] = None,
+        pinned: Optional[bool] = None,
+        pin_rank: Optional[int] = None,
+        label: Optional[str] = None,
+        metadata: Optional[Mapping[str, Any]] = None,
+        wait: bool = False,
+    ) -> Dict[str, Any]:
+        """Add a document to a knowledge base and return its item: ``queued``, since the
+        API reads it in the background (see :meth:`wait_until_ready`).
+
+        ``document`` is a :class:`Document` or Markdown text. A text needs a ``title``; a
+        file's title is its file name's stem unless one is given. A small text or Markdown
+        file goes inline; every other file is uploaded first. ``pinned`` documents are
+        always given to the decision; on a knowledge base with a scope key, the key's value
+        in ``metadata`` scopes the document. With ``wait`` the API holds the call up to
+        10 s and answers once the document is ready, else as it stands."""
+        path = _collection_path(collection_id, "/items")
+        fields = _document_fields(reference, pinned, pin_rank, label, metadata)
+        return self._client._write_document("POST", path, document, title, fields, wait)
+
+    def replace_document(
+        self,
+        collection_id: str,
+        item_id: str,
+        document: DocumentInput,
+        title: Optional[str] = None,
+        reference: Optional[str] = None,
+        pinned: Optional[bool] = None,
+        pin_rank: Optional[int] = None,
+        label: Optional[str] = None,
+        metadata: Optional[Mapping[str, Any]] = None,
+        wait: bool = False,
+    ) -> Dict[str, Any]:
+        """Replace a document whole: a new version, read in the background while the old
+        one keeps serving until it is ready. The same text again changes nothing and is
+        free. Its arguments are :meth:`add_document`'s."""
+        path = _item_path(collection_id, item_id)
+        fields = _document_fields(reference, pinned, pin_rank, label, metadata)
+        return self._client._write_document("PUT", path, document, title, fields, wait)
+
+    def get_item(self, collection_id: str, item_id: str, include_text: bool = False) -> Dict[str, Any]:
+        """One item. With ``include_text`` a document carries ``text``, its stored text
+        (``None`` while no version serves): the text the passages' byte offsets index."""
+        query = {"include": "text"} if include_text else None
+        _, _, body = self._client._json("GET", _item_path(collection_id, item_id), None, query=query)
+        return cast(Dict[str, Any], body)
+
+    def list_chunks(
+        self, collection_id: str, item_id: str, offset: Optional[int] = None, limit: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """One page of a document's searchable chunks, each with its heading, byte offsets
+        (UTF-8, end exclusive), pages, tokens and text."""
+        path = _item_path(collection_id, item_id) + "/chunks"
+        _, _, body = self._client._json("GET", path, None, query=_list_query(offset, limit))
+        return cast(Dict[str, Any], body)
+
+    def delete_failed(self, collection_id: str) -> Dict[str, Any]:
+        """Delete every failed document of a knowledge base; the answer says how many."""
+        path = _collection_path(collection_id, "/items")
+        _, _, body = self._client._json("DELETE", path, None, query={"status": "failed"})
+        return cast(Dict[str, Any], body)
+
+    def wait_until_ready(
+        self,
+        collection_id: str,
+        item_id: Optional[str] = None,
+        timeout: float = 300.0,
+        poll_interval: float = 1.0,
+    ) -> Dict[str, Any]:
+        """Wait for documents to be read. With ``item_id``, read the item until it is
+        ``ready`` or ``failed`` and return it (a failed item is returned, its ``error``
+        saying why); without, read the collection until nothing is queued or processing
+        and return it. Reads at once, then after ``poll_interval`` seconds, 1.5 times
+        longer after each read up to 10 s.
+
+        Raises:
+            TimeoutError: Not done within ``timeout`` seconds.
+            ValueError: ``timeout`` is not above 0, or ``poll_interval`` is below 0.1.
+        """
+        limit, first = check_wait(timeout, poll_interval)
+        path = _wait_path(collection_id, item_id)
+        client = self._client
+        interval, waited, started = first, 0.0, time.monotonic()
+        while True:
+            _, _, body = client._json("GET", path, None)
+            if is_done(body, item_id is not None):
+                return cast(Dict[str, Any], body)
+            # The waits made, or the time passed when it is longer (each read takes some).
+            left = limit - max(waited, time.monotonic() - started)
+            if left <= 0:
+                raise _not_ready(item_id is not None, limit)
+            pause = min(interval, left)
+            client._sleep(pause)
+            waited += pause
+            interval = next_interval(interval)
+
+    def search(
+        self,
+        collection_id: str,
+        query: str,
+        scope: Optional[str] = None,
+        match: Any = None,
+        filter: Any = None,  # noqa: A002 - the API's field
+        top_k: Optional[int] = None,
+        pinned: Optional[bool] = None,
+        max_tokens: Optional[Union[int, str]] = None,
+    ) -> Union[KnowledgeReading, UnknownReading]:
+        """Search a knowledge base without a decision, as the ``knowledge`` booster
+        would, and return the passages with their text. Billed as one knowledge call;
+        needs a full-scope key. Each argument is sent only when given, for the API to
+        judge."""
+        path = _collection_path(collection_id, "/search")
+        content = _search_body(query, scope, match, filter, top_k, pinned, max_tokens)
+        _, _, body = self._client._json("POST", path, content)
+        return parse_knowledge(body)
 
 
 class Usage:
@@ -1911,7 +2249,7 @@ class AsyncDecisionNode(_Common):
         http_client: Optional[httpx.AsyncClient] = None,
         inline_threshold: Optional[int] = None,
         http2: bool = False,
-        upload_timeout: Optional[float] = _base.DEFAULT_UPLOAD_TIMEOUT,
+        upload_timeout: Optional[float] = None,
     ) -> None:
         self._settings = Settings(
             api_key, base_url, model, timeout, max_retries, headers, inline_threshold, upload_timeout
@@ -2028,9 +2366,10 @@ class AsyncDecisionNode(_Common):
         content_type: str = "application/json",
         query: Optional[Query] = None,
         extra_headers: Optional[Mapping[str, str]] = None,
+        timeout: Optional[float] = None,
     ) -> Tuple[int, Dict[str, str], Any]:
         status, headers, text = await self._send(
-            method, path, content, policy, content_type, query, extra_headers=extra_headers
+            method, path, content, policy, content_type, query, timeout=timeout, extra_headers=extra_headers
         )
         return status, headers, _base.parse_json(status, headers, text)
 
@@ -2071,7 +2410,14 @@ class AsyncDecisionNode(_Common):
     # ---- uploads
 
     async def _put(
-        self, img: Image, entry: Mapping[str, Any], presigned_at: float, url_ttl: float, may_presign: bool
+        self,
+        data: bytes,
+        what: str,
+        entry: Mapping[str, Any],
+        presigned_at: float,
+        url_ttl: float,
+        may_presign: bool,
+        timeout: float,
     ) -> None:
         settings = self._settings
         path = _storage_path(entry["url"])
@@ -2083,20 +2429,18 @@ class AsyncDecisionNode(_Common):
                 "PUT",
                 entry["url"],
                 headers=entry["headers"],
-                content=img.data,
-                extensions={"timeout": httpx.Timeout(settings.upload_timeout).as_dict()},
+                content=data,
+                extensions={"timeout": httpx.Timeout(timeout).as_dict()},
             )
             try:
-                # Its own deadline, for the whole attempt: the upload_timeout.
-                response = await asyncio.wait_for(
-                    self._http.send(request, follow_redirects=False), settings.upload_timeout
-                )
+                # Its own deadline, for the whole attempt: the upload timeout.
+                response = await asyncio.wait_for(self._http.send(request, follow_redirects=False), timeout)
             except httpx.TransportError as exc:
-                error = _transport_error(exc, settings.upload_timeout)
+                error = _transport_error(exc, timeout)
                 _base.log_response("PUT", path, type(error).__name__, None, started, attempt)
                 retry = True
             except asyncio.TimeoutError:
-                error = _timeout_error(settings.upload_timeout)
+                error = _timeout_error(timeout)
                 _base.log_response("PUT", path, type(error).__name__, None, started, attempt)
                 retry = True
             else:
@@ -2107,7 +2451,7 @@ class AsyncDecisionNode(_Common):
                     return
                 if status == 403 and may_presign and self._clock() - presigned_at >= url_ttl:
                     raise UrlExpired()
-                error = storage_error(img.id, status, resp_headers, response.text)
+                error = storage_error(what, status, resp_headers, response.text)
                 retry = 500 <= status <= 599
             if not retry or attempt >= settings.max_retries:
                 raise error
@@ -2124,7 +2468,18 @@ class AsyncDecisionNode(_Common):
         out: Dict[CacheKey, str] = {}
         expired: List[Image] = []
         results = await asyncio.gather(
-            *(self._put(img, entry, presigned_at, url_ttl, may_presign) for img, entry in zip(todo, entries)),
+            *(
+                self._put(
+                    img.data or b"",
+                    "image %r" % img.id,
+                    entry,
+                    presigned_at,
+                    url_ttl,
+                    may_presign,
+                    self._settings.upload_timeout,
+                )
+                for img, entry in zip(todo, entries)
+            ),
             return_exceptions=True,
         )
         errors: List[BaseException] = []
@@ -2174,6 +2529,61 @@ class AsyncDecisionNode(_Common):
     async def _frame_image(self, image: Any) -> Dict[str, Any]:
         plan = self._plan([image], strip_id=True)
         return (await self._finish(plan))[0]
+
+    async def _upload_files(self, files: List[DocumentFile], may_presign: bool = True) -> List[str]:
+        presign = _base.encode(knowledge_presign_body(files))
+        _, _, body = await self._json("POST", _base.UPLOADS_PATH, presign)
+        entries = presigned_entries(body, len(files))
+        for entry in entries:
+            check_storage_url(entry["url"])
+        url_ttl = float(body.get("expires_in") or 300)
+        presigned_at = self._clock()
+        timeout = _document_put_timeout(self._settings)
+        ids = [entry["upload_id"] for entry in entries]
+        results = await asyncio.gather(
+            *(
+                self._put(f.data, f.describe(), entry, presigned_at, url_ttl, may_presign, timeout)
+                for f, entry in zip(files, entries)
+            ),
+            return_exceptions=True,
+        )
+        expired = [i for i, r in enumerate(results) if isinstance(r, UrlExpired)]
+        errors = [r for r in results if isinstance(r, BaseException) and not isinstance(r, UrlExpired)]
+        if errors:
+            raise errors[0]
+        if expired:
+            again = await self._upload_files([files[i] for i in expired], may_presign=False)
+            for i, upload_id in zip(expired, again):
+                ids[i] = upload_id
+        return ids
+
+    async def _write_document(
+        self, method: str, path: str, document: Any, title: Any, fields: Mapping[str, Any], wait: Any
+    ) -> Dict[str, Any]:
+        query = wait_query(wait)
+        doc = as_document(document)
+        data = await aread_document(doc) if _is_file(doc) else None
+        plan = plan_document(doc, data, title, fields, self._settings.inline_threshold)
+        return cast(Dict[str, Any], await self._send_document(method, path, plan, query))
+
+    async def _send_document(self, method: str, path: str, plan: DocumentPlan, query: Any) -> Any:
+        timeout = _write_timeout(self._settings, query)
+        upload_id: Optional[str] = None
+        for attempt in (0, 1):
+            if plan.file is not None and upload_id is None:
+                upload_id = (await self._upload_files([plan.file]))[0]
+            content = _base.encode(plan.body(upload_id))
+            try:
+                _, _, body = await self._json(
+                    method, path, content, IDEMPOTENT, query=query, extra_headers=_idempotency_key(), timeout=timeout
+                )
+                return body
+            except BadRequestError as exc:
+                if attempt == 0 and plan.file is not None and exc.error_type in _base.STALE_UPLOAD:
+                    upload_id = None
+                    continue
+                raise
+        raise AssertionError("unreachable")
 
     # ---- decisions
 
@@ -2401,6 +2811,12 @@ class AsyncDecisionNode(_Common):
         ids = await self._upload(local) if local else {}
         return [img.upload_id if img.data is None else ids[cache_key(img)] for img in imgs]
 
+    async def upload_documents(self, documents: Sequence[DocumentInput]) -> List[str]:
+        """Upload 1 to 16 documents for knowledge bases. See :meth:`DecisionNode.upload_documents`."""
+        docs = _document_list(documents)
+        files = [upload_file(i, d, await aread_document(d) if _is_file(d) else None) for i, d in enumerate(docs)]
+        return await self._upload_files(files)
+
     async def decide_raw(self, body: Any) -> Any:
         """Send ``body`` to ``POST /v1/decide`` exactly as given and return the parsed response body."""
         _, _, parsed = await self._json("POST", _base.DECIDE_PATH, _base.encode(body))
@@ -2553,12 +2969,21 @@ class AsyncCollections:
     def __init__(self, client: AsyncDecisionNode) -> None:
         self._client = client
 
-    async def create(self, name: str, type: str = "face") -> Dict[str, Any]:  # noqa: A002 - the API's field
-        """Create a collection of the workspace."""
-        check_collection(type, name)
-        content = _base.encode({"type": type, "name": name})
+    async def create(
+        self,
+        name: str,
+        type: str = "face",  # noqa: A002 - the API's field
+        scope_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a collection of the workspace: ``type`` ``face`` (the default) or
+        ``text``, a knowledge base. ``scope_key`` (a knowledge base's only, fixed for its
+        life) names the metadata key whose value scopes a document, such as ``mission``."""
+        check_collection(type, name, scope_key)
+        fields: Dict[str, Any] = {"type": type, "name": name}
+        if scope_key is not None:
+            fields["scope_key"] = scope_key
         _, _, body = await self._client._json(
-            "POST", _base.COLLECTIONS_PATH, content, IDEMPOTENT, extra_headers=_idempotency_key()
+            "POST", _base.COLLECTIONS_PATH, _base.encode(fields), IDEMPOTENT, extra_headers=_idempotency_key()
         )
         return cast(Dict[str, Any], body)
 
@@ -2573,7 +2998,9 @@ class AsyncCollections:
         return cast(Dict[str, Any], body)
 
     async def delete(self, collection_id: str) -> Dict[str, Any]:
-        """Delete a collection and every item in it."""
+        """Delete a collection and every item in it. A knowledge base answers
+        ``{"id", "deleted": true}`` once purged, or ``{"id", "status": "purging"}`` while
+        the purge finishes in the background."""
         _, _, body = await self._client._json("DELETE", _collection_path(collection_id), None)
         return cast(Dict[str, Any], body)
 
@@ -2624,12 +3051,20 @@ class AsyncCollections:
         reference: Any = UNSET,
         label: Any = UNSET,
         metadata: Any = UNSET,
+        pinned: Any = UNSET,
+        pin_rank: Any = UNSET,
+        title: Any = UNSET,
     ) -> Dict[str, Any]:
         """Edit an item, sending only the fields given: ``label=None`` clears the label,
-        and ``metadata`` replaces the item's whole object (``{}`` empties it). It carries
-        an ``Idempotency-Key`` and retries as ``enroll`` does."""
+        and ``metadata`` replaces the item's whole object (``{}`` empties it). A document
+        also takes ``pinned``, ``pin_rank`` and ``title``; each applies at once and is
+        never billed, except a new title, which makes a new version. It carries an
+        ``Idempotency-Key`` and retries as ``enroll`` does."""
         path = _item_path(collection_id, item_id)
-        content = _item_update(reference, label, metadata)
+        if pinned is UNSET and pin_rank is UNSET and title is UNSET:
+            content = _item_update(reference, label, metadata)
+        else:
+            content = _text_update(reference, label, metadata, pinned, pin_rank, title)
         _, _, body = await self._client._json("PATCH", path, content, IDEMPOTENT, extra_headers=_idempotency_key())
         return cast(Dict[str, Any], body)
 
@@ -2637,6 +3072,129 @@ class AsyncCollections:
         """Delete one item of a collection."""
         _, _, body = await self._client._json("DELETE", _item_path(collection_id, item_id), None)
         return cast(Dict[str, Any], body)
+
+    # ---- knowledge bases (collections of type text)
+
+    async def add_document(
+        self,
+        collection_id: str,
+        document: DocumentInput,
+        title: Optional[str] = None,
+        reference: Optional[str] = None,
+        pinned: Optional[bool] = None,
+        pin_rank: Optional[int] = None,
+        label: Optional[str] = None,
+        metadata: Optional[Mapping[str, Any]] = None,
+        wait: bool = False,
+    ) -> Dict[str, Any]:
+        """Add a document to a knowledge base and return its item: ``queued``, since the
+        API reads it in the background (see :meth:`wait_until_ready`).
+
+        ``document`` is a :class:`Document` or Markdown text. A text needs a ``title``; a
+        file's title is its file name's stem unless one is given. A small text or Markdown
+        file goes inline; every other file is uploaded first. ``pinned`` documents are
+        always given to the decision; on a knowledge base with a scope key, the key's value
+        in ``metadata`` scopes the document. With ``wait`` the API holds the call up to
+        10 s and answers once the document is ready, else as it stands."""
+        path = _collection_path(collection_id, "/items")
+        fields = _document_fields(reference, pinned, pin_rank, label, metadata)
+        return await self._client._write_document("POST", path, document, title, fields, wait)
+
+    async def replace_document(
+        self,
+        collection_id: str,
+        item_id: str,
+        document: DocumentInput,
+        title: Optional[str] = None,
+        reference: Optional[str] = None,
+        pinned: Optional[bool] = None,
+        pin_rank: Optional[int] = None,
+        label: Optional[str] = None,
+        metadata: Optional[Mapping[str, Any]] = None,
+        wait: bool = False,
+    ) -> Dict[str, Any]:
+        """Replace a document whole: a new version, read in the background while the old
+        one keeps serving until it is ready. The same text again changes nothing and is
+        free. Its arguments are :meth:`add_document`'s."""
+        path = _item_path(collection_id, item_id)
+        fields = _document_fields(reference, pinned, pin_rank, label, metadata)
+        return await self._client._write_document("PUT", path, document, title, fields, wait)
+
+    async def get_item(self, collection_id: str, item_id: str, include_text: bool = False) -> Dict[str, Any]:
+        """One item. With ``include_text`` a document carries ``text``, its stored text
+        (``None`` while no version serves): the text the passages' byte offsets index."""
+        query = {"include": "text"} if include_text else None
+        _, _, body = await self._client._json("GET", _item_path(collection_id, item_id), None, query=query)
+        return cast(Dict[str, Any], body)
+
+    async def list_chunks(
+        self, collection_id: str, item_id: str, offset: Optional[int] = None, limit: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """One page of a document's searchable chunks, each with its heading, byte offsets
+        (UTF-8, end exclusive), pages, tokens and text."""
+        path = _item_path(collection_id, item_id) + "/chunks"
+        _, _, body = await self._client._json("GET", path, None, query=_list_query(offset, limit))
+        return cast(Dict[str, Any], body)
+
+    async def delete_failed(self, collection_id: str) -> Dict[str, Any]:
+        """Delete every failed document of a knowledge base; the answer says how many."""
+        path = _collection_path(collection_id, "/items")
+        _, _, body = await self._client._json("DELETE", path, None, query={"status": "failed"})
+        return cast(Dict[str, Any], body)
+
+    async def wait_until_ready(
+        self,
+        collection_id: str,
+        item_id: Optional[str] = None,
+        timeout: float = 300.0,
+        poll_interval: float = 1.0,
+    ) -> Dict[str, Any]:
+        """Wait for documents to be read. With ``item_id``, read the item until it is
+        ``ready`` or ``failed`` and return it (a failed item is returned, its ``error``
+        saying why); without, read the collection until nothing is queued or processing
+        and return it. Reads at once, then after ``poll_interval`` seconds, 1.5 times
+        longer after each read up to 10 s.
+
+        Raises:
+            TimeoutError: Not done within ``timeout`` seconds.
+            ValueError: ``timeout`` is not above 0, or ``poll_interval`` is below 0.1.
+        """
+        limit, first = check_wait(timeout, poll_interval)
+        path = _wait_path(collection_id, item_id)
+        client = self._client
+        interval, waited, started = first, 0.0, time.monotonic()
+        while True:
+            _, _, body = await client._json("GET", path, None)
+            if is_done(body, item_id is not None):
+                return cast(Dict[str, Any], body)
+            # The waits made, or the time passed when it is longer (each read takes some).
+            left = limit - max(waited, time.monotonic() - started)
+            if left <= 0:
+                raise _not_ready(item_id is not None, limit)
+            pause = min(interval, left)
+            await client._sleep(pause)
+            waited += pause
+            interval = next_interval(interval)
+
+    async def search(
+        self,
+        collection_id: str,
+        query: str,
+        scope: Optional[str] = None,
+        match: Any = None,
+        filter: Any = None,  # noqa: A002 - the API's field
+        top_k: Optional[int] = None,
+        pinned: Optional[bool] = None,
+        max_tokens: Optional[Union[int, str]] = None,
+    ) -> Union[KnowledgeReading, UnknownReading]:
+        """Search a knowledge base without a decision, as the ``knowledge`` booster
+        would, and return the passages with their text. Billed as one knowledge call;
+        needs a full-scope key. Each argument is sent only when given, for the API to
+        judge."""
+        path = _collection_path(collection_id, "/search")
+        content = _search_body(query, scope, match, filter, top_k, pinned, max_tokens)
+        _, _, body = await self._client._json("POST", path, content)
+        return parse_knowledge(body)
 
 
 class AsyncUsage:

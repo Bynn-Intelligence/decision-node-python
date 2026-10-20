@@ -14,6 +14,7 @@ import base64
 import hashlib
 import http.client
 import inspect
+import io
 import json
 import os
 import re
@@ -355,9 +356,26 @@ def norm_reading(r: Any) -> Dict[str, Any]:
             **{n: getattr(r, n) for n in fields},
             instances=[norm_instance(i) for i in r.instances],
         )
+    if isinstance(r, dn.KnowledgeReading):
+        return norm_knowledge(r)
     if not isinstance(r, dn.UnknownReading):
         raise Fail("reading of class %s is none of the reading types" % type(r).__name__)
     return {"kind": "unknown", "raw": r.raw}
+
+
+PASSAGE_FIELDS = ("n", "pinned", "item", "reference", "title", "heading", "chunk", "byte_start", "byte_end")
+PASSAGE_FIELDS += ("tokens", "score", "lexical", "rendered", "text")
+
+
+def norm_knowledge(r: Any) -> Dict[str, Any]:
+    """A knowledge reading as the cases write it: the wire's fields, its objects as sent,
+    an empty field as null and empty warnings as []."""
+    fields = ("collection", "collection_name", "corpus", "query", "budget", "scope", "warnings")
+    out = dict({"kind": "knowledge"}, **{n: getattr(r, n) for n in fields})
+    out["passages"] = [{n: getattr(p, n) for n in PASSAGE_FIELDS} for p in r.passages]
+    for n in ("omitted", "pending_items", "search", "truncated"):
+        out[n] = getattr(r, n)
+    return out
 
 
 def norm_instance(i: Any) -> Dict[str, Any]:
@@ -619,6 +637,11 @@ def decode(value: Any, ctx: Dict[str, Any]) -> Any:
             return dn.score(args.get("instructions"), args["levels"])
         if key == "$number":
             return dn.number(args.get("instructions"), args.get("min"), args.get("max"), args.get("step"))
+        if key == "$knowledge":
+            # Suite 1.23: the knowledge booster's builder, each argument only when present.
+            return dn.knowledge(**{k: decode(v, ctx) for k, v in args.items()})
+        if key == "$document":
+            return document(args, ctx)
         if key == "$booster":
             args = {k: decode(v, ctx) for k, v in args.items()}
             return dn.Booster(args["name"], **{k: args[k] for k in ("images", "require", "options") if k in args})
@@ -656,6 +679,35 @@ def decode(value: Any, ctx: Dict[str, Any]) -> Any:
     if isinstance(value, list):
         return [decode(v, ctx) for v in value]
     return value
+
+
+def document(args: Dict[str, Any], ctx: Dict[str, Any]) -> dn.Document:
+    """Suite 1.23's $document: text, a file by path, bytes (data_base64, data_text as
+    UTF-8, repeat_text) or a stream (stream_base64), or an upload_id; pad_to as for an
+    image, a padded path passed as bytes with its file name."""
+    assert SUITE is not None
+    args = {k: decode(v, ctx) for k, v in args.items()}
+    extra = {k: args[k] for k in ("content_type", "filename") if k in args}
+    if "text" in args:
+        return dn.Document(args["text"], **{k: args[k] for k in ("format",) if k in args})
+    if "upload_id" in args:
+        return dn.Document(upload_id=args["upload_id"])
+    if "path" in args and "pad_to" not in args:
+        return dn.Document(path=SUITE / args["path"], **extra)
+    if "data_text" in args:
+        data = args["data_text"].encode("utf-8")
+    elif "repeat_text" in args:
+        data = (args["repeat_text"]["repeat"] * args["repeat_text"]["times"]).encode("utf-8")
+    elif "path" in args:
+        data = (SUITE / args["path"]).read_bytes()
+        extra.setdefault("filename", Path(args["path"]).name)
+    else:
+        data = base64.b64decode(args.get("data_base64") or args.get("stream_base64") or "")
+    if "pad_to" in args:
+        data = data + b"\0" * max(0, args["pad_to"] - len(data))
+    if "stream_base64" in args:
+        return dn.Document(stream=io.BytesIO(data), **extra)
+    return dn.Document(data=data, **extra)
 
 
 def with_index(value: Any, i: int) -> Any:
@@ -809,6 +861,7 @@ COLLECTION_KINDS = (
     "item",
     "item_page",
     "deleted",
+    "chunk_page",
     "key_usage",
     "usage_page",
     "usage_items",
@@ -871,6 +924,10 @@ def check_outcome(spec: Dict[str, Any], result: Any, path: str) -> None:
             raise Fail("%s: expected a BatchRun, got %r" % (path, result))
         match_batch(spec.get("batch", {}), result.batch, path + ".batch")
         check_results_spec(spec, result.results, path)
+    elif kind == "knowledge":
+        if not isinstance(result, dn.KnowledgeReading):
+            raise Fail("%s: expected a KnowledgeReading, got %r" % (path, result))
+        match(spec.get("knowledge", {}), norm_reading(result), path + ".knowledge")
     elif kind in COLLECTION_KINDS:
         check_collection_result(kind, spec.get(kind, {}), result, path + "." + kind)
     elif kind == "checked":
@@ -1182,6 +1239,10 @@ async def run_response(case: Dict[str, Any], mock: Mock, mode: str, env: pytest.
     elif "upload_ids" in exp:
         if not same(exp["upload_ids"], list(result)):
             raise Fail("upload_ids: expected %s, got %s" % (exp["upload_ids"], result))
+    elif "knowledge" in exp:
+        if not isinstance(result, dn.KnowledgeReading):
+            raise Fail("knowledge: expected a KnowledgeReading, got %r" % (result,))
+        match(exp["knowledge"], norm_reading(result), "knowledge")
     elif any(k in exp for k in COLLECTION_KINDS):
         kind = next(k for k in COLLECTION_KINDS if k in exp)
         check_collection_result(kind, exp[kind], result, kind)

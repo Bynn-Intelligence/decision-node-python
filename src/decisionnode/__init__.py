@@ -31,6 +31,8 @@ from ._boosters import (
     FaceDetectionReading,
     FaceMatch,
     FaceRecognitionReading,
+    KnowledgePassage,
+    KnowledgeReading,
     OcrReading,
     Reading,
     SegmentDepth,
@@ -41,6 +43,7 @@ from ._boosters import (
     SegmentSize,
     TopGenerator,
     UnknownReading,
+    knowledge,
 )
 from ._client import AsyncBatches, AsyncDecisionNode, Batches, BatchRequest, DecideRequest, DecisionNode, DecisionResult
 from ._errors import (
@@ -62,6 +65,7 @@ from ._errors import (
     ValidationError,
 )
 from ._images import DEFAULT_INLINE_THRESHOLD, Image
+from ._knowledge import Document, DocumentInput
 from ._questions import (
     BoxQuestion,
     ChoiceQuestion,
@@ -131,6 +135,10 @@ __all__ = [
     # boosters
     "Booster",
     "BoosterInput",
+    "knowledge",
+    # knowledge bases
+    "Document",
+    "DocumentInput",
     # results
     "Decision",
     "Fallback",
@@ -169,6 +177,8 @@ __all__ = [
     "SegmentDepth",
     "SegmentSize",
     "SegmentExtent",
+    "KnowledgeReading",
+    "KnowledgePassage",
     "TopGenerator",
     "UnknownReading",
     "BoosterStatus",

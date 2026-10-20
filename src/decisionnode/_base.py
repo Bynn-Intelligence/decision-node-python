@@ -48,6 +48,12 @@ OCR_TIMEOUT = 30.0
 # One storage PUT attempt of an image, apart from the API attempt's timeout: up to 10 MB
 # on a slower uplink than the API's answers need.
 DEFAULT_UPLOAD_TIMEOUT = 60.0
+# One storage PUT attempt of a knowledge file, unless the caller set upload_timeout: a
+# file is up to 50 MB.
+DOCUMENT_UPLOAD_TIMEOUT = 120.0
+# One attempt of a document write with wait, unless the caller set a timeout: the server
+# holds the call up to 10 s.
+WAIT_TIMEOUT = 20.0
 DEFAULT_MAX_RETRIES = 2
 DEFAULT_CONCURRENCY = 8
 USER_AGENT = "decisionnode-python/%s" % __version__
@@ -86,6 +92,9 @@ IDEMPOTENT = "idempotent"
 IDEMPOTENCY_IN_PROGRESS = "idempotency_in_progress"
 # The reason of a 529 that is never retried (it has no Retry-After).
 ENROLLMENT_UNPRICED = "enrollment_unpriced"
+# A required knowledge reading while ingestion is delayed: a 529 never retried, since the
+# wait is an outage of ingestion and the caller decides.
+INGESTION_DELAYED = "ingestion_delayed"
 # A key past its daily spend cap: a 429 never retried, since its Retry-After runs to the
 # cap's reset at 00:00 UTC.
 SPEND_CAP_REACHED = "key_spend_cap_reached"
@@ -195,6 +204,7 @@ class Settings:
         self.custom_headers: Dict[str, str] = dict(headers or {})
         self.inline_threshold = check_inline_threshold(inline_threshold)
         self.upload_timeout = check_timeout(upload_timeout, DEFAULT_UPLOAD_TIMEOUT, "upload_timeout")
+        self.upload_timeout_given = upload_timeout is not None
 
     def request_headers(self, has_body: bool, content_type: str = "application/json") -> Dict[str, str]:
         headers = {
@@ -307,8 +317,9 @@ def check_fallback(fallback: Any) -> Optional[bool]:
 
 
 def should_retry(policy: str, status: int, error: DecisionNodeError) -> bool:
-    if status == 529 and (error.details or {}).get("reason") == ENROLLMENT_UNPRICED:
-        # An enrollment the API has no price for: a retry never cures it.
+    if status == 529 and (error.details or {}).get("reason") in (ENROLLMENT_UNPRICED, INGESTION_DELAYED):
+        # An enrollment the API has no price for, or knowledge waiting on a delayed
+        # ingestion: a retry soon never cures either.
         return False
     if status == 429 and error.error_type == SPEND_CAP_REACHED:
         return False

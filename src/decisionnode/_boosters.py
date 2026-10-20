@@ -31,6 +31,9 @@ __all__ = [
     "SegmentDepth",
     "SegmentSize",
     "SegmentExtent",
+    "KnowledgeReading",
+    "KnowledgePassage",
+    "knowledge",
     "TopGenerator",
     "UnknownReading",
     "AnyReading",
@@ -78,6 +81,58 @@ class Booster:
         if self.images is None and self.require is None and self.options is None:
             return self.name
         return self.to_dict()
+
+
+def knowledge(
+    collection: str,
+    query: Optional[str] = None,
+    scope: Optional[str] = None,
+    match: Any = None,
+    filter: Any = None,  # noqa: A002 - the API's option
+    top_k: Optional[int] = None,
+    max_tokens: Optional[Union[int, str]] = None,
+    pinned: Optional[bool] = None,
+    min_score: Optional[Union[int, float]] = None,
+    include_text: Optional[bool] = None,
+    require: bool = False,
+) -> Booster:
+    """The ``knowledge`` booster: passages from a knowledge base (a collection of type
+    ``text``) given to the decision as facts and rules to apply. Its reading is a
+    :class:`KnowledgeReading` in ``decision.evidence["knowledge"]``.
+
+    Args:
+        collection: The knowledge base's ``col_`` id.
+        query: Replaces the automatic query (every question's instructions, then the state).
+        scope: The value of the collection's scope key, such as a mission's id: the
+            global documents and that value's are searched, never another value's.
+        match: Metadata equality, ``{"region": "SE", "product": ["car", "home"]}``.
+        filter: A filter tree of metadata conditions, sent as given.
+        top_k: The most passages retrieved, pinned documents not counted (0: pinned only).
+        max_tokens: The passages' token budget, an integer or ``"auto"``.
+        pinned: ``False`` leaves the pinned documents out.
+        min_score: A similarity floor, from 0 to 1, for passages found by meaning alone.
+        include_text: Adds each passage's text and the query's to the reading (a
+            full-scope key only).
+        require: ``True``: a decision that cannot have the passages fails instead of
+            running without them.
+
+    Each option is sent only when given, as given; the API judges them all.
+    """
+    options: Dict[str, Any] = {"collection": collection}
+    for name, value in (
+        ("query", query),
+        ("scope", scope),
+        ("match", match),
+        ("filter", filter),
+        ("top_k", top_k),
+        ("max_tokens", max_tokens),
+        ("pinned", pinned),
+        ("min_score", min_score),
+        ("include_text", include_text),
+    ):
+        if value is not None:
+            options[name] = value
+    return Booster("knowledge", require=True if require else None, options=options)
 
 
 BoosterInput = Union[str, Booster, Mapping[str, Any]]
@@ -448,6 +503,89 @@ class SegmentReading(Reading):
     assumed_hfov_deg: Optional[Union[int, float]]
 
 
+@dataclass(frozen=True)
+class KnowledgePassage:
+    """One passage of a knowledge reading: a chunk of one of the knowledge base's documents.
+
+    ``byte_start`` and ``byte_end`` are UTF-8 byte offsets, end exclusive, into the
+    document's stored text (``collections.get_item(..., include_text=True)``); slice the
+    text's UTF-8 bytes with them, not the string.
+
+    Attributes:
+        n: The passage's number in the block the model reads.
+        pinned: ``True`` for a pinned document's passage, always included.
+        item: The document's item id.
+        chunk: The chunk's number within the document.
+        byte_start: Where the passage starts in the stored text.
+        byte_end: Where it ends, exclusive.
+        reference: The document's reference, or ``None`` (always for a publishable key).
+        title: The document's title, or ``None`` (always for a publishable key).
+        heading: The heading path above the passage, or ``None``.
+        tokens: The passage's tokens.
+        score: The similarity, 4 decimals as sent; ``None`` for a pinned passage.
+        lexical: ``True`` when the passage matched on words.
+        rendered: ``False`` when the passage was left out of the block to fit; ``None``
+            on a search's passages.
+        text: The passage's text, only with ``include_text`` and on a search.
+    """
+
+    n: int
+    pinned: bool
+    item: str
+    chunk: int
+    byte_start: int
+    byte_end: int
+    reference: Optional[str] = None
+    title: Optional[str] = None
+    heading: Optional[str] = None
+    tokens: Optional[int] = None
+    score: Optional[Union[int, float]] = None
+    lexical: Optional[bool] = None
+    rendered: Optional[bool] = None
+    text: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class KnowledgeReading(Reading):
+    """A reading of the ``knowledge`` booster, and the answer of ``collections.search``:
+    the passages of a knowledge base that apply to the request.
+
+    Attributes:
+        collection: The knowledge base's id.
+        passages: The passages in the block's order, pinned first.
+        collection_name: Its name; ``None`` for a publishable key's reading.
+        corpus: The corpus searched, ``{"version"}``, as sent, or ``None``.
+        query: The query, ``{"source", "tokens", "text"}``: ``source`` ``auto`` (built from
+            the request), ``request`` (the ``query`` option) or ``none`` (pinned only);
+            ``text`` only with ``include_text`` and on a search. As sent, or ``None``.
+        budget: The passages' token budget, ``{"mode", "tokens", "entry", "cause"}``, as
+            sent, or ``None``.
+        scope: The scope searched, ``{"key", "value"}`` (``value`` ``None`` when no scope
+            was named), or ``None`` on a collection without a scope key.
+        warnings: ``scope_not_named``, ``over_budget``, ``budget_floor``,
+            ``pinned_filtered`` or any other; empty when there are none.
+        omitted: Passages left out, by cause, as sent, or ``None``.
+        pending_items: The documents not ready yet, or ``None``.
+        search: How the search ran, ``{"plan", "candidates", "fallback"}``, as sent, or
+            ``None``.
+        truncated: ``True`` when a passage was dropped at the model's context limit;
+            ``None`` on a search.
+    """
+
+    collection: str
+    passages: List[KnowledgePassage]
+    collection_name: Optional[str] = None
+    corpus: Optional[Dict[str, Any]] = None
+    query: Optional[Dict[str, Any]] = None
+    budget: Optional[Dict[str, Any]] = None
+    scope: Optional[Dict[str, Any]] = None
+    warnings: List[str] = field(default_factory=list)
+    omitted: Optional[Dict[str, Any]] = None
+    pending_items: Optional[int] = None
+    search: Optional[Dict[str, Any]] = None
+    truncated: Optional[bool] = None
+
+
 AnyReading = Union[
     AgeReading,
     AiGeneratedReading,
@@ -456,6 +594,7 @@ AnyReading = Union[
     FaceRecognitionReading,
     DepthReading,
     SegmentReading,
+    KnowledgeReading,
     UnknownReading,
 ]
 
@@ -774,6 +913,72 @@ def _segment(raw: Dict[str, Any]) -> SegmentReading:
     )
 
 
+def _optional_integer(raw: Mapping[str, Any], key: str) -> Optional[int]:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise _Malformed(key)
+    return value
+
+
+def _optional_bool(raw: Mapping[str, Any], key: str) -> Optional[bool]:
+    value = raw.get(key)
+    if value is not None and not isinstance(value, bool):
+        raise _Malformed(key)
+    return value
+
+
+def _passage(e: Mapping[str, Any]) -> KnowledgePassage:
+    pinned = e.get("pinned")
+    if not isinstance(pinned, bool):
+        raise _Malformed("pinned")
+    return KnowledgePassage(
+        n=_integer(e, "n"),
+        pinned=pinned,
+        item=_string(e, "item"),
+        chunk=_integer(e, "chunk"),
+        byte_start=_integer(e, "byte_start"),
+        byte_end=_integer(e, "byte_end"),
+        reference=_optional_string(e, "reference"),
+        title=_optional_string(e, "title"),
+        heading=_optional_string(e, "heading"),
+        tokens=_optional_integer(e, "tokens"),
+        score=_nullable(e, "score"),
+        lexical=_optional_bool(e, "lexical"),
+        rendered=_optional_bool(e, "rendered"),
+        text=_optional_string(e, "text"),
+    )
+
+
+def _knowledge(raw: Dict[str, Any]) -> KnowledgeReading:
+    objects = {key: _object_or_none(raw, key) for key in ("corpus", "query", "budget", "scope", "search", "omitted")}
+    warnings = raw.get("warnings")
+    if warnings is None:
+        warnings = []
+    if not isinstance(warnings, list) or not all(isinstance(w, str) for w in warnings):
+        raise _Malformed("warnings")
+    image = raw.get("image")
+    return KnowledgeReading(
+        image=image if isinstance(image, str) else None,
+        raw=raw,
+        collection=_string(raw, "collection"),
+        passages=[_passage(e) for e in _entries(raw, "passages")],
+        collection_name=_optional_string(raw, "collection_name"),
+        warnings=list(warnings),
+        pending_items=_optional_integer(raw, "pending_items"),
+        truncated=_optional_bool(raw, "truncated"),
+        **{key: None if value is None else dict(value) for key, value in objects.items()},
+    )
+
+
+def parse_knowledge(raw: Any) -> Union[KnowledgeReading, UnknownReading]:
+    """A knowledge reading, as a decision's evidence or a search's answer carries it."""
+    reading = parse_reading("knowledge", raw)
+    assert isinstance(reading, (KnowledgeReading, UnknownReading))
+    return reading
+
+
 _READERS: Dict[str, Callable[[Dict[str, Any]], AnyReading]] = {
     "age": _age,
     "ai_generated": _ai_generated,
@@ -782,6 +987,7 @@ _READERS: Dict[str, Callable[[Dict[str, Any]], AnyReading]] = {
     "face_recognition": _face_recognition,
     "bynn_depth": _depth,
     "bynn_segment": _segment,
+    "knowledge": _knowledge,
 }
 
 

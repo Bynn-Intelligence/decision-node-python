@@ -249,10 +249,11 @@ def check_storage_url(url: str) -> None:
 _S3_CODE = re.compile(r"<Code>([^<]*)</Code>")
 
 
-def storage_error(image_id: str, status: int, headers: Mapping[str, str], text: str) -> DecisionNodeError:
+def storage_error(what: str, status: int, headers: Mapping[str, str], text: str) -> DecisionNodeError:
+    """A storage PUT's failure; ``what`` names the file, such as ``image 'receipt'``."""
     match = _S3_CODE.search(text or "")
     return DecisionNodeError(
-        "the upload of image %r to storage failed with %d" % (image_id, status),
+        "the upload of %s to storage failed with %d" % (what, status),
         status=status,
         error_type="upload_failed",
         reason=match.group(1) if match else None,

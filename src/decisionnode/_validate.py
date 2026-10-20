@@ -59,11 +59,17 @@ PLACE_TYPES = ("point", "box")
 # Several places (decided 2026-10-12): a point or box question's max, 2 to 16.
 PLACES_MIN, PLACES_MAX = 2, 16
 # Collections (decided 2026-10-12): a collection's name, and an item's reference and label.
-COLLECTION_TYPES = ("face",)
+COLLECTION_TYPES = ("face", "text")
+# A text collection's scope key, fixed for its life (spec 1.4).
+SCOPE_KEY_PATTERN = "^[a-z0-9_]{1,40}$"
 COLLECTION_NAME_MAX = 80
 ITEM_REFERENCE_MAX = 64
 ITEM_REFERENCE_PATTERN = "^[A-Za-z0-9_.:-]{1,64}$"
 ITEM_LABEL_MAX = 128
+# A text item (spec 1.4): its title in characters once trimmed, its pin rank, its format.
+TITLE_MAX = 200
+PIN_RANK_MAX = 1000
+TEXT_FORMATS = ("markdown", "text")
 # A collections 422 echoes a string input cut to 64 characters, then "...".
 ECHO_CHARS = 64
 # An item's metadata (suite 1.15): at most 20 keys, each 1 to 40 of a-z, 0-9 and _, each
@@ -924,13 +930,16 @@ def _string_entries(loc: List[Any], value: Any, most: int, pattern: Optional[str
     return []
 
 
-def check_collection(kind: Any, name: Any) -> None:
-    """A new collection's type and name, as the API checks them."""
+def check_collection(kind: Any, name: Any, scope_key: Any = None) -> None:
+    """A new collection's type, name and scope key, as the API checks them."""
     entries: List[Entry] = []
     if kind not in COLLECTION_TYPES:
-        msg, ctx = "Input should be 'face'", {"expected": "'face'"}
+        msg, ctx = "Input should be 'face' or 'text'", {"expected": "'face' or 'text'"}
         entries.append((_entry("literal_error", ["body", "type"], msg, _echoed(kind), ctx), None))
     entries.extend(_string_entries(["body", "name"], name, COLLECTION_NAME_MAX))
+    if scope_key is not None and (not isinstance(scope_key, str) or not re.fullmatch(SCOPE_KEY_PATTERN, scope_key)):
+        msg = "String should match pattern '%s'" % SCOPE_KEY_PATTERN
+        entries.append((_entry("string_pattern_mismatch", ["body", "scope_key"], msg, _echoed(scope_key)), None))
     if entries:
         _raise_422(entries)
 
@@ -951,20 +960,96 @@ def check_item(image: Any, reference: Any, label: Any, metadata: Any = None) -> 
         _raise_422(entries)
 
 
-def check_item_update(reference: Any, label: Any, metadata: Any, unset: Any) -> None:
+def check_item_update(
+    reference: Any,
+    label: Any,
+    metadata: Any,
+    unset: Any,
+    pinned: Any,
+    pin_rank: Any,
+    title: Any,
+) -> None:
     """An item's edit, as the API checks it: the fields given (``unset`` marks one left
     out) checked as an enrollment's are, a label given as null clearing it, and at least
-    one field."""
+    one field. ``pinned``, ``pin_rank`` and ``title`` (``unset`` when left out) are a
+    document's, checked after them."""
     entries: List[Entry] = []
+    text = any(v is not unset for v in (pinned, pin_rank, title))
     if reference is not unset:
         entries.extend(_string_entries(["body", "reference"], reference, ITEM_REFERENCE_MAX, ITEM_REFERENCE_PATTERN))
     if label is not unset and label is not None:
         entries.extend(_string_entries(["body", "label"], label, ITEM_LABEL_MAX))
     if metadata is not unset:
         entries.extend(_metadata_entries(metadata))
-    if reference is unset and label is unset and metadata is unset:
+    if pinned is not unset and not isinstance(pinned, bool):
+        msg = "Input should be a valid boolean"
+        entries.append((_entry("bool_type", ["body", "pinned"], msg, _echoed(pinned)), None))
+    if pin_rank is not unset and (not _is_int(pin_rank) or not 0 <= pin_rank <= PIN_RANK_MAX):
+        msg = "Input should be an integer from 0 to %d" % PIN_RANK_MAX
+        entries.append((_entry("int_range", ["body", "pin_rank"], msg, _echoed(pin_rank)), None))
+    if title is not unset:
+        entries.extend(_title_entries(title))
+    if not text and reference is unset and label is unset and metadata is unset:
         msg = "Send reference, label, metadata or any of them"
         entries.append((_entry("missing", ["body"], msg, None), None))
+    if entries:
+        _raise_422(entries)
+
+
+def _title_entries(title: Any) -> List[Entry]:
+    """A text item's title: 1 to 200 characters once trimmed."""
+    if isinstance(title, str) and 1 <= len(title.strip()) <= TITLE_MAX:
+        return []
+    msg = "A title is 1 to %d characters" % TITLE_MAX
+    return [(_entry("string_too_long", ["body", "title"], msg, _echoed(title)), None)]
+
+
+def _text_field_entries(fields: Mapping[str, Any]) -> List[Entry]:
+    """The fields a document shares with its edit, as every collection item's (suite
+    1.15): the reference, the pin rank, the label (null clears it), the metadata, then
+    ``pinned``. ``fields`` holds only the fields given."""
+    out: List[Entry] = []
+    if fields.get("reference") is not None:
+        out.extend(
+            _string_entries(["body", "reference"], fields["reference"], ITEM_REFERENCE_MAX, ITEM_REFERENCE_PATTERN)
+        )
+    if fields.get("pin_rank") is not None:
+        rank = fields["pin_rank"]
+        if not _is_int(rank) or not 0 <= rank <= PIN_RANK_MAX:
+            msg = "Input should be an integer from 0 to %d" % PIN_RANK_MAX
+            out.append((_entry("int_range", ["body", "pin_rank"], msg, _echoed(rank)), None))
+    if fields.get("label") is not None:
+        out.extend(_string_entries(["body", "label"], fields["label"], ITEM_LABEL_MAX))
+    if fields.get("metadata") is not None:
+        out.extend(_metadata_entries(fields["metadata"]))
+    if fields.get("pinned") is not None and not isinstance(fields["pinned"], bool):
+        msg = "Input should be a valid boolean"
+        out.append((_entry("bool_type", ["body", "pinned"], msg, _echoed(fields["pinned"])), None))
+    return out
+
+
+def check_document_fields(
+    title: Any,
+    text: Any,
+    format: Any,
+    fields: Mapping[str, Any],
+    title_required: bool,  # noqa: A002
+) -> None:
+    """A document's item body as the API checks it, in its order: the title (required
+    with a text), an empty text, the format, then the fields it shares with an edit. Only
+    fields given (not ``None``) are checked."""
+    entries: List[Entry] = []
+    if title is None:
+        if title_required:
+            entries.append((_entry("missing", ["body", "title"], "Field required", None), None))
+    else:
+        entries.extend(_title_entries(title))
+    if text == "":
+        entries.append((_entry("string_too_short", ["body", "text"], "The text is empty", ""), None))
+    if format is not None and format not in TEXT_FORMATS:
+        msg = "Input should be 'markdown' or 'text'"
+        entries.append((_entry("literal_error", ["body", "format"], msg, _echoed(format)), None))
+    entries.extend(_text_field_entries(fields))
     if entries:
         _raise_422(entries)
 
