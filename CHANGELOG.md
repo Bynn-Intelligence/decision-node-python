@@ -4,11 +4,12 @@ All notable changes to this package are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.4.1] - Unreleased
 
-Implements version 1.4 of the SDK specification (`SPEC_VERSION` is `"1.4"`), knowledge,
-and passes conformance suite 1.25. Suite 1.22's Segment Vision cases record an opening's
-offset from the centre of the match's box; the readings keep the offset as sent.
+The first release of 0.4 (0.4.0 is never published). Implements version 1.4 of the SDK
+specification (`SPEC_VERSION` is `"1.4"`), knowledge, and passes conformance suite 1.25.
+Suite 1.22's Segment Vision cases record an opening's offset from the centre of the
+match's box; the readings keep the offset as sent.
 
 ### Added
 
