@@ -816,7 +816,7 @@ M-42's, never another mission's.
 | `replace_document(collection_id, item_id, document, ...)` | Replaces it whole: a new version, the old one serving until it is ready. The same text again is free |
 | `update_item(collection_id, item_id, reference=..., label=..., metadata=..., pinned=..., pin_rank=..., title=...)` | Changes only the fields given, at once and free; a new `title` makes a new version |
 | `get_item(collection_id, item_id, include_text=False)` | The document; with `include_text`, its stored `text` |
-| `list_items(collection_id, ...)`, `list_chunks(collection_id, item_id, offset=None, limit=None)` | The documents, and a document's chunks with their headings, byte offsets and text |
+| `list_items(collection_id, ..., q=None, sort=None)`, `list_chunks(collection_id, item_id, offset=None, limit=None)` | The documents (`q` matches a title, file name or reference; `sort` is `newest`, `oldest` or `title`), and a document's chunks with their headings, byte offsets and text |
 | `delete_item(collection_id, item_id)`, `delete_failed(collection_id)` | Deletes one document, or every failed one |
 | `search(collection_id, query, scope=None, match=None, filter=None, top_k=None, pinned=None, max_tokens=None)` | The passages a decision would get, with their text, without a decision: a `KnowledgeReading` |
 | `wait_until_ready(collection_id, item_id=None, timeout=300, poll_interval=1)` | Waits for a document, or every document, to be read |

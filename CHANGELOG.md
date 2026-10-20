@@ -7,7 +7,7 @@ All notable changes to this package are listed here. The format follows
 ## [0.4.1] - Unreleased
 
 The first release of 0.4 (0.4.0 is never published). Implements version 1.4 of the SDK
-specification (`SPEC_VERSION` is `"1.4"`), knowledge, and passes conformance suite 1.25.
+specification (`SPEC_VERSION` is `"1.4"`), knowledge, and passes conformance suite 1.27.
 Suite 1.22's Segment Vision cases record an opening's offset from the centre of the
 match's box; the readings keep the offset as sent.
 
@@ -33,6 +33,8 @@ match's box; the readings keep the offset as sent.
 - `upload_documents(documents)`: 1 to 16 documents uploaded ahead, their upload ids in
   order. Knowledge uploads are never cached; `upload(images)` is unchanged and sends no
   `purpose`.
+- `collections.list_items` takes a knowledge base's `q` (1 to 200 characters) and `sort`
+  (`newest`, `oldest` or `title`), each sent only when given and checked before sending.
 - `collections.update_item` takes a document's `pinned`, `pin_rank` and `title`;
   `collections.get_item` (with `include_text`), `collections.list_chunks`,
   `collections.delete_failed` and `collections.search`, which returns a

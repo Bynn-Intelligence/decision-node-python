@@ -70,6 +70,10 @@ ITEM_LABEL_MAX = 128
 TITLE_MAX = 200
 PIN_RANK_MAX = 1000
 TEXT_FORMATS = ("markdown", "text")
+# A knowledge base's items list: q in characters, the sorts, and how much of a bad sort is echoed.
+ITEMS_Q_MAX = 200
+ITEMS_SORTS = ("newest", "oldest", "title")
+SORT_ECHO_CHARS = 16
 # A collections 422 echoes a string input cut to 64 characters, then "...".
 ECHO_CHARS = 64
 # An item's metadata (suite 1.15): at most 20 keys, each 1 to 40 of a-z, 0-9 and _, each
@@ -1113,6 +1117,17 @@ def check_reference_query(reference: Any, reference_prefix: Any) -> None:
                 "Query parameter %s must be 1 to 64 characters of A-Z, a-z, 0-9, _, ., : and -, got %s."
                 % (name, _printable(str(value), ECHO_CHARS))
             )
+
+
+def check_items_search(q: Any, sort: Any) -> None:
+    """A knowledge base's items list: ``q`` 1 to 200 characters, ``sort`` newest, oldest or
+    title, as the API checks them after the other query parameters."""
+    if q is not None and (not isinstance(q, str) or not 1 <= len(q) <= ITEMS_Q_MAX):
+        raise usage_error("Query parameter q must be 1 to %d characters." % ITEMS_Q_MAX)
+    if sort is not None and sort not in ITEMS_SORTS:
+        raise usage_error(
+            "Query parameter sort must be newest, oldest or title, got %s." % _printable(str(sort), SORT_ECHO_CHARS)
+        )
 
 
 def _printable(value: str, most: int) -> str:

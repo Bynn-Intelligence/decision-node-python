@@ -804,3 +804,17 @@ def test_errors_map_to_their_classes(mode: str, status: int, error_type: str, cl
     err = Harness(mode, rec).error("add_document", COL, "text", title="T")
     assert type(err) is cls and err.error_type == error_type and err.details == {"items": 0}
     assert len(rec.requests) == 1
+
+
+def test_list_items_q_and_sort(mode: str) -> None:
+    rec = Recorder(json_response(200, {"items": [], "q": "claims policy", "sort": "title"}))
+    h = Harness(mode, rec)
+    h.call("list_items", COL, q="claims policy", sort="title")
+    assert dict(rec.requests[0].url.params) == {"q": "claims policy", "sort": "title"}
+    with pytest.raises(dn.BadRequestError) as info:
+        h.call("list_items", COL, q="")
+    assert str(info.value) == "Query parameter q must be 1 to 200 characters."
+    with pytest.raises(dn.BadRequestError) as info:
+        h.call("list_items", COL, sort="alphabetical-by-title")
+    assert str(info.value) == "Query parameter sort must be newest, oldest or title, got alphabetical-by-...."
+    assert len(rec.requests) == 1

@@ -114,6 +114,7 @@ from ._validate import (
     check_images,
     check_item,
     check_item_update,
+    check_items_search,
     check_key_fields,
     check_lines,
     check_list_query,
@@ -334,10 +335,13 @@ def _collection_list(body: Any) -> List[Dict[str, Any]]:
     return list(found) if isinstance(found, list) else []
 
 
-def _items_query(offset: Any, limit: Any, reference: Any, reference_prefix: Any) -> Dict[str, Any]:
+def _items_query(
+    offset: Any, limit: Any, reference: Any, reference_prefix: Any, q: Any = None, sort: Any = None
+) -> Dict[str, Any]:
     query: Dict[str, Any] = dict(_list_query(offset, limit))
     check_reference_query(reference, reference_prefix)
-    for name, value in (("reference", reference), ("reference_prefix", reference_prefix)):
+    check_items_search(q, sort)
+    for name, value in (("reference", reference), ("reference_prefix", reference_prefix), ("q", q), ("sort", sort)):
         if value is not None:
             query[name] = value
     return query
@@ -1859,12 +1863,16 @@ class Collections:
         limit: Optional[int] = None,
         reference: Optional[str] = None,
         reference_prefix: Optional[str] = None,
+        q: Optional[str] = None,
+        sort: Optional[str] = None,
     ) -> Dict[str, Any]:
         """One page of a collection's items, newest first; with ``reference`` only the
         items of that reference, with ``reference_prefix`` those whose reference starts
-        with it (not both), in reference order."""
+        with it (not both), in reference order. A knowledge base also takes ``q``, 1 to
+        200 characters matched against each document's title, file name or reference, and
+        ``sort``: ``newest``, ``oldest`` or ``title``."""
         path = _collection_path(collection_id, "/items")
-        query = _items_query(offset, limit, reference, reference_prefix)
+        query = _items_query(offset, limit, reference, reference_prefix, q, sort)
         _, _, body = self._client._json("GET", path, None, query=query)
         return cast(Dict[str, Any], body)
 
@@ -3035,12 +3043,16 @@ class AsyncCollections:
         limit: Optional[int] = None,
         reference: Optional[str] = None,
         reference_prefix: Optional[str] = None,
+        q: Optional[str] = None,
+        sort: Optional[str] = None,
     ) -> Dict[str, Any]:
         """One page of a collection's items, newest first; with ``reference`` only the
         items of that reference, with ``reference_prefix`` those whose reference starts
-        with it (not both), in reference order."""
+        with it (not both), in reference order. A knowledge base also takes ``q``, 1 to
+        200 characters matched against each document's title, file name or reference, and
+        ``sort``: ``newest``, ``oldest`` or ``title``."""
         path = _collection_path(collection_id, "/items")
-        query = _items_query(offset, limit, reference, reference_prefix)
+        query = _items_query(offset, limit, reference, reference_prefix, q, sort)
         _, _, body = await self._client._json("GET", path, None, query=query)
         return cast(Dict[str, Any], body)
 
