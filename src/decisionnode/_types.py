@@ -314,6 +314,13 @@ class Usage:
 
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
+    # The shares of input_tokens that came from images and from videos, from the
+    # x-decisionnode-image-tokens and x-decisionnode-video-tokens headers, as sent: never
+    # added to or taken from another count. None for a request without images (or
+    # videos), since the server sends each header only when its share is above 0, and
+    # when the header is not a whole number from 0 to 2^31 - 1.
+    image_tokens: Optional[int] = None
+    video_tokens: Optional[int] = None
     # Only a request with videos carries these.
     video_frames: Optional[int] = None
     video_seconds: Optional[Union[int, float]] = None
@@ -644,6 +651,8 @@ def parse_decision(body: Any, headers: Mapping[str, str]) -> Decision:
         usage=Usage(
             input_tokens=usage.get("input_tokens"),
             output_tokens=usage.get("output_tokens"),
+            image_tokens=parse_token_header(headers.get("x-decisionnode-image-tokens")),
+            video_tokens=parse_token_header(headers.get("x-decisionnode-video-tokens")),
             video_frames=usage.get("video_frames"),
             video_seconds=usage.get("video_seconds"),
             booster_tokens=usage.get("booster_tokens"),
@@ -666,6 +675,23 @@ def parse_fallback(headers: Mapping[str, str]) -> Optional[Fallback]:
     if served is None:
         return None
     return Fallback(served_model=served, requested_model=headers.get("x-decisionnode-requested-model"))
+
+
+# The largest token count a header may carry, 2^31 - 1.
+_MAX_HEADER_TOKENS = 2**31 - 1
+
+
+def parse_token_header(value: Optional[str]) -> Optional[int]:
+    """A token count from a header: ASCII digits only after trimming spaces, from 0 to
+    2^31 - 1. Anything else (absent, empty, a sign, a fraction, too large) is ``None``,
+    never an error and never 0."""
+    if value is None:
+        return None
+    digits = value.strip(" \t")
+    if not digits or not digits.isascii() or not digits.isdigit():
+        return None
+    number = int(digits)
+    return number if number <= _MAX_HEADER_TOKENS else None
 
 
 def parse_latency(value: Optional[str]) -> Optional[Union[int, float]]:

@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 import json
+from typing import Dict, Optional, Tuple
 
 from decisionnode import ChoiceAnswer, ScoreAnswer, TruthAnswer, UnknownAnswer
-from decisionnode._types import parse_answer, parse_decision, parse_latency, parse_model, parse_safety
+from decisionnode._types import (
+    parse_answer,
+    parse_decision,
+    parse_latency,
+    parse_model,
+    parse_safety,
+    parse_token_header,
+)
 
 
 def test_numbers_pass_through_unrounded() -> None:
@@ -61,6 +69,45 @@ def test_latency() -> None:
     assert parse_latency("7") == 7 and isinstance(parse_latency("7"), int)
     assert parse_latency("soon") is None
     assert parse_latency("nan") is None
+
+
+_SHARES_BODY = {"answers": {}, "usage": {"input_tokens": 1300, "output_tokens": 0}}
+
+
+def _shares(headers: Dict[str, str]) -> Tuple[Optional[int], Optional[int]]:
+    d = parse_decision(_SHARES_BODY, headers)
+    assert d.usage.input_tokens == 1300, "never changed by the shares"
+    assert d.raw == _SHARES_BODY, "raw is the body as sent"
+    return (d.usage.image_tokens, d.usage.video_tokens)
+
+
+def _one_share(name: str, value: str) -> Optional[int]:
+    image, video = _shares({name: value})
+    if "image" in name:
+        assert video is None, (name, value)
+        return image
+    assert image is None, (name, value)
+    return video
+
+
+def test_image_and_video_tokens_from_their_headers() -> None:
+    both = {"x-decisionnode-image-tokens": "1024", "x-decisionnode-video-tokens": "256"}
+    assert _shares(both) == (1024, 256)
+    assert _shares({}) == (None, None)
+    bad = ["", "   ", "-1", "-0", "+5", "12.0", "1e3", "abc", "12 3", "0x10", "\u0661\u0662", "\u00b2"]
+    for name in ("x-decisionnode-image-tokens", "x-decisionnode-video-tokens"):
+        assert _one_share(name, "512") == 512, name
+        assert _one_share(name, "0") == 0, name
+        assert _one_share(name, "  77 ") == 77, name
+        assert _one_share(name, "2147483647") == 2_147_483_647, name
+        for value in bad + ["2147483648", "99999999999999999999999"]:
+            assert _one_share(name, value) is None, (name, value)
+
+
+def test_token_header() -> None:
+    assert parse_token_header(None) is None
+    assert parse_token_header("\t42\t") == 42
+    assert isinstance(parse_token_header("42"), int)
 
 
 def test_safety_forms() -> None:

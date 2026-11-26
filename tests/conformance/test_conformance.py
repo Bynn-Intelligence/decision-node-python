@@ -475,6 +475,8 @@ def norm_decision(d: dn.Decision) -> Dict[str, Any]:
         "latency_ms": d.latency_ms,
         "usage": {
             "input_tokens": d.usage.input_tokens,
+            "image_tokens": d.usage.image_tokens,
+            "video_tokens": d.usage.video_tokens,
             "output_tokens": d.usage.output_tokens,
             "video_frames": d.usage.video_frames,
             "video_seconds": d.usage.video_seconds,

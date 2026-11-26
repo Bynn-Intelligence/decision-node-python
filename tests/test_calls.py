@@ -199,6 +199,19 @@ class TestCalls:
         with pytest.raises(ValueError):
             h.client.check_request("systemone", state="s", questions={"t": dn.truth("?")})
 
+    def test_decide_reads_the_image_and_video_token_headers(self, mode: str) -> None:
+        body = decision_body({"t": {"type": "truth", "truth": 0.9}})
+        body["usage"] = {"input_tokens": 1400, "output_tokens": 0}
+        headers = {"x-decisionnode-image-tokens": "1024", "x-decisionnode-video-tokens": "300"}
+        h = Harness(mode, lambda r: json_response(200, body, headers))
+        d = h.call("decide", "s", {"t": dn.truth("?")})
+        assert d.usage.input_tokens == 1400
+        assert (d.usage.image_tokens, d.usage.video_tokens) == (1024, 300)
+        assert "image_tokens" not in d.raw["usage"]
+        plain = Harness(mode, lambda r: json_response(200, body))
+        d = plain.call("decide", "s", {"t": dn.truth("?")})
+        assert (d.usage.image_tokens, d.usage.video_tokens) == (None, None)
+
     def test_number_helper(self, mode: str) -> None:
         answer = {"type": "number", "number": 3.5, "expected": 3.42, "confidence": 0.6, "probabilities": {"3.5": 0.6}}
         h = Harness(mode, lambda r: json_response(200, decision_body({"number": answer})))
@@ -303,6 +316,17 @@ class TestBatches:
             {"custom_id": "b", "status": 422, "body": {"detail": [{"type": "missing"}]}, "headers": {}}
         )
         assert isinstance(error.error, dn.ValidationError) and error.decision is None
+        ok = parse_result(
+            {
+                "custom_id": "a",
+                "status": 200,
+                "body": {"answers": {}, "usage": {"input_tokens": 5, "output_tokens": 0}},
+                "headers": {"X-Request-Id": "req_1"},
+            }
+        )
+        # A result line carries no image or video token headers, so both read empty.
+        assert ok.decision is not None and ok.decision.request_id == "req_1"
+        assert (ok.decision.usage.image_tokens, ok.decision.usage.video_tokens) == (None, None)
         expired = parse_result({"custom_id": "c", "status": "expired", "body": None, "headers": {}})
         assert expired.status == "expired" and expired.error is None and expired.decision is None
 

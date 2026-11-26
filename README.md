@@ -145,6 +145,7 @@ The thresholds are yours: the SDK never turns a probability into a decision.
 | `answers` | The answers by question id. `d["route"]` is `d.answers["route"]`. |
 | `model` | The model version that answered; for a fine-tuned model its pinned name (below). |
 | `usage.input_tokens`, `usage.output_tokens` | Token counts, or `None` when the server sent none (never `0` in their place). |
+| `usage.image_tokens`, `usage.video_tokens` | The shares of `input_tokens` that came from images and from videos, read from the `x-decisionnode-image-tokens` and `x-decisionnode-video-tokens` headers, so you can bill or budget vision tokens at your own price. `None` for a request without images (or videos), since the server sends each header only when its share is above 0, and when the header is not a whole number from 0 to 2^31 - 1. Read as sent: never added to or taken from another count and never priced. A batch result's decision reads `None` for both. |
 | `usage.video_frames`, `usage.video_seconds` | For a request with videos: the frames the server read and the seconds of video they cover; `None` otherwise. |
 | `usage.booster_tokens`, `usage.boosters` | For a request with boosters: the share of `input_tokens` the boosters' readings take, and the booster calls billed; `None` otherwise. |
 | `usage.cost` | What the answer cost in USD, as a `Cost`: `usd`, `model_usd`, `boosters_usd` and `free_tier`, read as the server sent them and never summed by the SDK; `None` when the server sent none. A session's open and each frame reply carry their own. |
@@ -1229,7 +1230,7 @@ and no checkout keeping its credentials.
 DECISIONNODE_CONFORMANCE_DIR=/path/to/decision-node-conformance uv run pytest
 ```
 
-This package implements version 1.2 of the specification shared by every official
+This package implements version 1.5 of the specification shared by every official
 DecisionNode SDK, exported as `decisionnode.SPEC_VERSION`.
 
 ## License

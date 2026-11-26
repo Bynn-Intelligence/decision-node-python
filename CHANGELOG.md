@@ -4,6 +4,27 @@ All notable changes to this package are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - Unreleased
+
+Implements version 1.5 of the SDK specification (`SPEC_VERSION` is `"1.5"`): the image and
+video shares of the input tokens, so callers can bill or budget vision tokens at their own
+price. Passes conformance suite 1.28 with the sync and the async client.
+
+### Added
+
+- `Usage.image_tokens` and `Usage.video_tokens` (`Optional[int]`): the share of
+  `usage.input_tokens` that came from images and from videos, read from the
+  `x-decisionnode-image-tokens` and `x-decisionnode-video-tokens` response headers on every
+  call that returns a `Decision`. Each is `None` when its header is absent (the server
+  sends it only for a request with images or videos), empty, or not a whole number from 0
+  to 2^31 - 1 after trimming spaces; such a header never fails the decision. Both are read
+  as sent, never added to or taken from another count and never priced. A batch result's
+  decision reads `None`, since its line carries no such headers. `raw` is unchanged.
+
+### Changed
+
+- `SPEC_VERSION` is `"1.5"`.
+
 ## [0.4.1] - Unreleased
 
 The first release of 0.4 (0.4.0 is never published). Implements version 1.4 of the SDK
